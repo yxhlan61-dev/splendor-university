@@ -7,7 +7,7 @@
 推荐使用 Python Launcher 启动静态服务器。请在项目目录运行：
 
 ```powershell
-cd /d "F:\璀璨宝石之大学模拟器"
+cd /d "F:\splendor"
 py -m http.server 8000 --bind 127.0.0.1
 ```
 
@@ -17,8 +17,6 @@ py -m http.server 8000 --bind 127.0.0.1
 http://127.0.0.1:8000/index.html
 ```
 
-> 注意：当前电脑上的 `python` 命令指向 WindowsApps 启动器，直接运行 `python -m http.server 8000` 可能会静默失败。请优先使用 `py -m http.server 8000 --bind 127.0.0.1`。
-
 如果 8000 端口被占用，可以换一个端口：
 
 ```powershell
@@ -26,6 +24,12 @@ py -m http.server 5173 --bind 127.0.0.1
 ```
 
 然后访问 `http://127.0.0.1:5173/index.html`。
+
+也可以直接运行：
+
+```powershell
+.\start_game.bat
+```
 
 ## 已实现
 
@@ -41,6 +45,7 @@ py -m http.server 5173 --bind 127.0.0.1
 - 机遇卡触发、奖励、弃牌区洗回循环。
 - 10 张资源上限与强制弃还。
 - 浏览器本地存储保存/继续。
+- 紧凑式页面布局，方便宽屏下一览主要元素。
 
 ## 测试
 
