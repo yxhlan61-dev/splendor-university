@@ -1,17 +1,17 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import {
   buyCard,
   createGame,
   discardToken,
-  drawOpportunity,
   getPaymentOptions,
+  reserveBlindCard,
   reserveMarketCard,
   resolveOpportunity,
   takeDifferent,
   takeSame,
   totalTokens,
 } from '../src/game.js';
-import { LEVEL2_TEMPLATES, MARKET_SIZE } from '../src/data.js';
+import { LEVEL1_TEMPLATES, LEVEL2_TEMPLATES, MARKET_SIZE } from '../src/data.js';
 
 function deterministicGame(playerCount = 2) {
   return createGame({ playerCount, firstPlayerIndex: 0, rng: () => 0.42 });
@@ -37,8 +37,11 @@ function testInit() {
   const g2 = deterministicGame(2);
   assert.equal(g2.supply.a, 5);
   assert.equal(g2.supply.wild, 5);
-  assert.equal(g2.decks.level1.length + g2.market.level1.length, 75);
-  assert.equal(g2.decks.level2.length + g2.market.level2.length, 36);
+  assert.equal(g2.decks.level1.length + g2.market.level1.length, 80);
+  assert.equal(g2.decks.level2.length + g2.market.level2.length, 39);
+  assert.equal(g2.decks.opportunity.length, 5);
+  assert.equal(LEVEL1_TEMPLATES.find((c) => c.id === 'L1_007').copies, 10);
+  assert.equal(LEVEL2_TEMPLATES.find((c) => c.id === 'L2_002').copies, 6);
   assert.equal(g2.market.level1.length, MARKET_SIZE);
   assert.equal(g2.market.level2.length, MARKET_SIZE);
 
@@ -75,7 +78,19 @@ function testReserve() {
   game.phase = 'player_action';
   game.currentPlayerIndex = 0;
   game.players[0].reservedCards.push({ instanceId: 'x' }, { instanceId: 'y' });
-  assert.throws(() => reserveMarketCard(game, 1, game.market.level1[0].instanceId), /预留区已满/);
+  assert.throws(() => reserveMarketCard(game, 1, game.market.level1[0].instanceId), /3/);
+
+  game.phase = 'player_action';
+  game.currentPlayerIndex = 0;
+  game.players[0].reservedCards = [];
+  const noAttribute = { instanceId: 'no_attr', templateId: 'manual', name: 'no-attribute-test', level: 2, attribute: null, cost: {}, happiness: 4 };
+  game.market.level2[0] = noAttribute;
+  assert.throws(() => reserveMarketCard(game, 2, noAttribute.instanceId), /\u4e0d\u80fd\u9884\u7559/);
+  assert.equal(game.market.level2[0].instanceId, noAttribute.instanceId);
+
+  game.decks.level2 = [noAttribute, { ...noAttribute, instanceId: 'no_attr_2' }];
+  assert.throws(() => reserveBlindCard(game, 2), /\u53ef\u9884\u7559/);
+  assert.equal(game.players[0].reservedCards.length, 0);
 }
 
 function testFixedPurchaseDiscount() {
@@ -127,6 +142,52 @@ function testOpportunity() {
   assert.equal(tie.winnerIndex, null);
 }
 
+function testOpportunityDrawWithReplacement() {
+  const game = deterministicGame(2);
+  const player = game.players[0];
+  giveCard(player, 'c', 1);
+  player.tokens.e = 3;
+  const card = { instanceId: 'score_auto', templateId: 'score_auto', name: 'score-test', level: 1, attribute: 'e', cost: { e: 3 }, happiness: 1 };
+  game.market.level1[0] = card;
+
+  const purchase = buyCard(game, card.instanceId, 0, () => 0.5);
+  assert.equal(purchase.opportunity.card.templateId, 'O_003');
+  assert.equal(game.decks.opportunity.length, 5);
+  assert.equal(game.discard.opportunity.length, 0);
+  assert.equal(game.phase, 'player_action');
+
+  game.currentPlayerIndex = 0;
+  game.phase = 'player_action';
+  player.tokens.e = 3;
+  const secondCard = { ...card, instanceId: 'score_auto_2' };
+  game.market.level1[0] = secondCard;
+  const second = buyCard(game, secondCard.instanceId, 0, () => 0.5);
+  assert.equal(second.opportunity.card.templateId, 'O_003');
+  assert.equal(game.decks.opportunity.length, 5);
+}
+
+function testOpportunityRewardForOtherPlayerCanRequireDiscard() {
+  const game = deterministicGame(3);
+  game.currentPlayerIndex = 1;
+  giveCard(game.players[2], 'c', 1);
+  game.players[2].tokens = { a: 2, b: 1, c: 3, d: 1, e: 2, wild: 0 };
+  game.supply.c = 2;
+  game.players[1].tokens.e = 3;
+  const card = { instanceId: 'score_other', templateId: 'score_other', name: 'score-test', level: 1, attribute: 'e', cost: { e: 3 }, happiness: 1 };
+  game.market.level1[0] = card;
+
+  const purchase = buyCard(game, card.instanceId, 0, () => 0.5);
+  assert.equal(purchase.opportunity.result.winnerIndex, 2);
+  assert.equal(totalTokens(game.players[2].tokens), 11);
+  assert.equal(game.phase, 'discard_tokens');
+  assert.equal(game.pendingDiscardPlayerIndex, 2);
+
+  discardToken(game, 'c');
+  assert.equal(totalTokens(game.players[2].tokens), 10);
+  assert.equal(game.phase, 'player_action');
+  assert.equal(game.currentPlayerIndex, 2);
+}
+
 function testDiscardAndEndgame() {
   const game = deterministicGame(2);
   game.players[0].tokens = { a: 10, b: 0, c: 0, d: 0, e: 0, wild: 0 };
@@ -144,7 +205,6 @@ function testDiscardAndEndgame() {
   const card = { instanceId: 'score', templateId: 'score', name: '单机游戏', level: 1, attribute: 'e', cost: { e: 3 }, happiness: 1 };
   end.market.level1[0] = card;
   buyCard(end, card.instanceId);
-  if (end.phase === 'opportunity_choice') drawOpportunity(end);
   assert.equal(end.endgameTriggered, true);
   assert.equal(end.phase, 'player_action');
 }
@@ -155,6 +215,8 @@ testReserve();
 testFixedPurchaseDiscount();
 testFlexibleCosts();
 testOpportunity();
+testOpportunityDrawWithReplacement();
+testOpportunityRewardForOtherPlayerCanRequireDiscard();
 testDiscardAndEndgame();
 
 console.log('All rule tests passed.');

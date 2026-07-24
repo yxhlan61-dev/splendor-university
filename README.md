@@ -1,4 +1,4 @@
-﻿# 璀璨宝石之大学模拟器 v0.1
+# 璀璨宝石之大学模拟器 v0.1
 
 基于 `docs/university_splendor_design.md` 制作的第一版本地多人浏览器原型。
 

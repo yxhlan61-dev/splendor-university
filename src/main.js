@@ -1,18 +1,13 @@
-﻿import {
+import {
   buyCard,
   canBuyCard,
   createGame,
   discardToken,
-  drawOpportunity,
-  findCardLocation,
-  formatCost,
-  formatTokens,
   getCurrentPlayer,
   getPaymentOptions,
   getPermanentCounts,
   reserveBlindCard,
   reserveMarketCard,
-  skipOpportunity,
   takeDifferent,
   takeSame,
   totalTokens,
@@ -22,6 +17,8 @@ import { GAME_VERSION, MARKET_SIZE, RESERVE_LIMIT, TASK_INFO, TASK_TYPES, TOKEN_
 let game = null;
 let selectedDifferent = new Set();
 let lastError = '';
+let opportunityAnimation = null;
+let gameOverDismissed = false;
 
 const app = document.querySelector('#app');
 
@@ -60,6 +57,8 @@ function startGame(event) {
   const firstMode = form.get('firstMode');
   const firstPlayerIndex = firstMode === 'random' ? Math.floor(Math.random() * playerCount) : Number(form.get('firstPlayerIndex'));
   game = createGame({ playerCount, playerNames: names, firstPlayerIndex });
+  opportunityAnimation = null;
+  gameOverDismissed = false;
   selectedDifferent.clear();
   save();
   render();
@@ -68,6 +67,8 @@ function startGame(event) {
 function resetGame() {
   if (!confirm('确定要重新开始并清除当前进度吗？')) return;
   game = null;
+  opportunityAnimation = null;
+  gameOverDismissed = false;
   localStorage.removeItem('universitySplendorGame');
   selectedDifferent.clear();
   render();
@@ -80,6 +81,8 @@ function render() {
   }
   const current = getCurrentPlayer(game);
   app.innerHTML = `
+    ${renderGameOver()}
+    ${renderOpportunityAnimation()}
     <header class="hero">
       <div>
         <h1>璀璨宝石之大学模拟器</h1>
@@ -92,14 +95,13 @@ function render() {
     </header>
 
     ${lastError ? `<div class="toast error">${escapeHtml(lastError)}</div>` : ''}
-    ${game.phase === 'game_over' ? renderGameOver() : ''}
 
     <main class="dashboard">
       <section class="status-grid">
         <div class="panel current">
           <h2>当前回合</h2>
           <p class="big">${escapeHtml(current.name)}</p>
-          <p>阶段：${phaseText(game.phase)} · 第 ${game.roundNumber} 轮 · ${game.endgameTriggered ? `终局：${game.endgameTriggeredBy}` : '未终局'}</p>
+          <p>第 ${game.roundNumber} 轮 · ${game.endgameTriggered ? `终局：${game.endgameTriggeredBy}` : '未终局'}</p>
         </div>
         <div class="panel">
           <h2>公共供应</h2>
@@ -107,7 +109,7 @@ function render() {
         </div>
         <div class="panel">
           <h2>牌库</h2>
-          <p>一级 ${game.decks.level1.length} · 二级 ${game.decks.level2.length} · 机遇 ${game.decks.opportunity.length} · 弃牌 ${game.discard.opportunity.length}</p>
+          <p>一级 ${game.decks.level1.length} 张 · 二级 ${game.decks.level2.length} 张 · 机遇池 ${game.decks.opportunity.length} 张（有放回）</p>
           <p>市场：每级最多 ${MARKET_SIZE} 张</p>
         </div>
       </section>
@@ -173,10 +175,44 @@ function renderSetup() {
   document.querySelector('#setupForm').addEventListener('submit', startGame);
   document.querySelector('#continueBtn')?.addEventListener('click', () => {
     game = saved;
+    opportunityAnimation = null;
+    gameOverDismissed = false;
     render();
   });
   updateFields();
   updateFirst();
+}
+
+function showOpportunityAnimation(card, message) {
+  const id = Date.now();
+  opportunityAnimation = {
+    id,
+    name: card.name,
+    attribute: card.attribute,
+    message: message.replace(/^机遇「[^」]+」：/, '').replace(/。$/, ''),
+  };
+  window.setTimeout(() => {
+    if (opportunityAnimation?.id === id) {
+      opportunityAnimation = null;
+      render();
+    }
+  }, 2800);
+}
+
+function renderOpportunityAnimation() {
+  if (!opportunityAnimation) return '';
+  const attr = opportunityAnimation.attribute;
+  const attrName = TASK_INFO[attr]?.name || '无属性';
+  return `
+    <div class="opportunity-overlay" aria-live="polite">
+      <article class="opportunity-card attr-${attr || 'none'}">
+        <p class="opportunity-kicker">机遇卡</p>
+        <h2>${escapeHtml(opportunityAnimation.name)}</h2>
+        <p class="opportunity-attr">${attributeBadge(attr, attrName)}</p>
+        <p class="opportunity-message">${escapeHtml(opportunityAnimation.message)}</p>
+      </article>
+    </div>
+  `;
 }
 
 function renderPlayers() {
@@ -198,16 +234,6 @@ function renderPlayers() {
 
 function renderPhaseControls() {
   if (game.phase === 'game_over') return '';
-  if (game.phase === 'opportunity_choice') {
-    return `
-      <section class="panel action-panel highlight">
-        <h2>机遇卡选择</h2>
-        <p>${escapeHtml(getCurrentPlayer(game).name)} 刚获得开心值，可以选择是否翻开 1 张机遇卡。</p>
-        <button class="primary" data-action="drawOpportunity">翻开机遇卡</button>
-        <button data-action="skipOpportunity">不翻开</button>
-      </section>
-    `;
-  }
   if (game.phase === 'discard_tokens') {
     const player = game.players[game.pendingDiscardPlayerIndex];
     return `
@@ -218,6 +244,10 @@ function renderPhaseControls() {
       </section>
     `;
   }
+  const currentPlayer = getCurrentPlayer(game);
+  const reserveFull = currentPlayer.reservedCards.length >= RESERVE_LIMIT;
+  const hasLevel1Reservable = game.decks.level1.some((card) => card.attribute);
+  const hasLevel2Reservable = game.decks.level2.some((card) => card.attribute);
   return `
     <section class="panel action-panel">
       <h2>主动作</h2>
@@ -232,8 +262,8 @@ function renderPhaseControls() {
       </div>
       <div class="action-block">
         <h3>盲预留</h3>
-        <button ${getCurrentPlayer(game).reservedCards.length >= RESERVE_LIMIT || game.decks.level1.length === 0 ? 'disabled' : ''} data-blind-reserve="1">盲预留一级牌</button>
-        <button ${getCurrentPlayer(game).reservedCards.length >= RESERVE_LIMIT || game.decks.level2.length === 0 ? 'disabled' : ''} data-blind-reserve="2">盲预留二级牌</button>
+        <button ${reserveFull || !hasLevel1Reservable ? 'disabled' : ''} data-blind-reserve="1">盲预留一级牌</button>
+        <button ${reserveFull || !hasLevel2Reservable ? 'disabled' : ''} data-blind-reserve="2">盲预留二级牌</button>
       </div>
     </section>
   `;
@@ -273,21 +303,42 @@ function renderCard(card, { source, level } = {}) {
   const purchasable = player && game.phase === 'player_action' && canBuyCard(player, card);
   const options = player ? getPaymentOptions(player, card) : [];
   const attr = card.attribute ? TASK_INFO[card.attribute].name : '无属性';
+  const attrKey = card.attribute || 'none';
+  const reservable = Boolean(card.attribute);
+  const reserveDisabled = game.phase !== 'player_action' || getCurrentPlayer(game).reservedCards.length >= RESERVE_LIMIT || !reservable;
   return `
-    <article class="card level-${card.level} ${purchasable ? 'can-buy' : ''}">
+    <article class="card level-${card.level} attr-${attrKey} ${purchasable ? 'can-buy' : ''}">
       <div class="card-top">
         <strong>${escapeHtml(card.name)}</strong>
         <span>+${card.happiness || 0}</span>
       </div>
-      <p>等级 ${card.level} · 属性：${attr}</p>
-      <p>成本：${formatCost(card)}</p>
+      <p>等级 ${card.level} · 属性：${attributeBadge(card.attribute, attr)}</p>
+      <p class="cost-line">成本：${renderCostBadges(card)}</p>
       <p class="muted">${purchasable ? options[0]?.label || '可赢取' : '当前不可赢取'}</p>
       <div class="card-actions">
         <button ${!purchasable ? 'disabled' : ''} data-buy="${card.instanceId}">赢取</button>
-        ${source === 'market' ? `<button ${game.phase !== 'player_action' || getCurrentPlayer(game).reservedCards.length >= RESERVE_LIMIT ? 'disabled' : ''} data-reserve="${card.instanceId}" data-level="${level}">预留</button>` : ''}
+        ${source === 'market' ? `<button ${reserveDisabled ? 'disabled' : ''} title="${reservable ? '预留该发展卡' : '无属性发展卡不能预留'}" data-reserve="${card.instanceId}" data-level="${level}">${reservable ? '预留' : '不可预留'}</button>` : ''}
       </div>
     </article>
   `;
+}
+
+function attributeBadge(type, label) {
+  const key = type || 'none';
+  return `<span class="cost-badge attr-chip cost-${key}">${escapeHtml(label)}</span>`;
+}
+
+function renderCostBadges(card) {
+  if (card.flexCost?.type === 'abc-total') {
+    return `<span class="cost-badges"><span class="cost-badge cost-a">学习</span><span class="cost-badge cost-b">科研</span><span class="cost-badge cost-c">学工</span><span class="cost-note">合计 ${card.flexCost.amount}</span></span>`;
+  }
+  if (card.flexCost?.type === 'same-kind') {
+    return `<span class="cost-badges"><span class="cost-badge cost-any">任意同种</span><span class="cost-note">合计 ${card.flexCost.amount}</span></span>`;
+  }
+  const badges = TASK_TYPES
+    .filter((type) => card.cost?.[type])
+    .map((type) => `<span class="cost-badge cost-${type}">${TASK_INFO[type].name}<b>${card.cost[type]}</b></span>`);
+  return badges.length ? `<span class="cost-badges">${badges.join('')}</span>` : '<span class="cost-badges"><span class="cost-badge cost-none">无</span></span>';
 }
 
 function renderLog() {
@@ -300,12 +351,31 @@ function renderLog() {
 }
 
 function renderGameOver() {
+  if (!game || game.phase !== 'game_over' || gameOverDismissed) return '';
+  const ranking = [...game.players].sort((a, b) => b.happiness - a.happiness || a.ownedCards.length - b.ownedCards.length);
+  const winnerNames = game.winners.map((p) => escapeHtml(p.name)).join('、');
   return `
-    <section class="panel game-over">
-      <h2>游戏结束</h2>
-      <p>胜者：${game.winners.map((p) => escapeHtml(p.name)).join('、')}</p>
-      <ol>${[...game.players].sort((a, b) => b.happiness - a.happiness || a.ownedCards.length - b.ownedCards.length).map((p) => `<li>${escapeHtml(p.name)}：${p.happiness} 开心值，已赢取 ${p.ownedCards.length} 张</li>`).join('')}</ol>
-    </section>
+    <div class="game-over-overlay" role="dialog" aria-modal="true" aria-labelledby="gameOverTitle">
+      <article class="game-over-card">
+        <p class="game-over-kicker">终局结算</p>
+        <h2 id="gameOverTitle">游戏结束</h2>
+        <p class="game-over-winner">胜者：<strong>${winnerNames}</strong></p>
+        <ol class="game-over-ranking">
+          ${ranking.map((p, index) => `
+            <li class="${game.winners.some((winner) => winner.id === p.id) ? 'winner' : ''}">
+              <span class="rank-medal">${index + 1}</span>
+              <span class="rank-name">${escapeHtml(p.name)}</span>
+              <span class="rank-score">${p.happiness} 开心值</span>
+              <span class="rank-cards">${p.ownedCards.length} 张发展卡</span>
+            </li>
+          `).join('')}
+        </ol>
+        <div class="game-over-actions">
+          <button class="primary" id="gameOverResetBtn">重新开始</button>
+          <button id="gameOverCloseBtn">查看棋盘</button>
+        </div>
+      </article>
+    </div>
   `;
 }
 
@@ -316,6 +386,11 @@ function bindEvents() {
     render();
   });
   document.querySelector('#resetBtn')?.addEventListener('click', resetGame);
+  document.querySelector('#gameOverResetBtn')?.addEventListener('click', resetGame);
+  document.querySelector('#gameOverCloseBtn')?.addEventListener('click', () => {
+    gameOverDismissed = true;
+    render();
+  });
   document.querySelectorAll('[data-toggle-different]').forEach((btn) => btn.addEventListener('click', () => {
     const type = btn.dataset.toggleDifferent;
     if (selectedDifferent.has(type)) selectedDifferent.delete(type);
@@ -326,9 +401,12 @@ function bindEvents() {
   document.querySelectorAll('[data-take-same]').forEach((btn) => btn.addEventListener('click', () => runAction(() => takeSame(game, btn.dataset.takeSame))));
   document.querySelectorAll('[data-reserve]').forEach((btn) => btn.addEventListener('click', () => runAction(() => reserveMarketCard(game, Number(btn.dataset.level), btn.dataset.reserve))));
   document.querySelectorAll('[data-blind-reserve]').forEach((btn) => btn.addEventListener('click', () => runAction(() => reserveBlindCard(game, Number(btn.dataset.blindReserve)))));
-  document.querySelectorAll('[data-buy]').forEach((btn) => btn.addEventListener('click', () => runAction(() => buyCard(game, btn.dataset.buy, 0))));
-  document.querySelector('[data-action="drawOpportunity"]')?.addEventListener('click', () => runAction(() => drawOpportunity(game)));
-  document.querySelector('[data-action="skipOpportunity"]')?.addEventListener('click', () => runAction(() => skipOpportunity(game)));
+  document.querySelectorAll('[data-buy]').forEach((btn) => btn.addEventListener('click', () => runAction(() => {
+    const purchase = buyCard(game, btn.dataset.buy, 0);
+    const draw = purchase?.opportunity;
+    const message = draw?.result?.message || '';
+    if (draw?.card && message) showOpportunityAnimation(draw.card, message);
+  })));
   document.querySelectorAll('[data-discard]').forEach((btn) => btn.addEventListener('click', () => runAction(() => discardToken(game, btn.dataset.discard))));
 }
 

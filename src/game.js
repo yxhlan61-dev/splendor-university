@@ -34,6 +34,33 @@ export function shuffle(array, rng = Math.random) {
   return copy;
 }
 
+function createOpportunityDeck(cycle = 0) {
+  const cards = [];
+  for (const template of OPPORTUNITY_TEMPLATES) {
+    const copies = template.copies ?? 1;
+    for (let i = 1; i <= copies; i += 1) {
+      cards.push({
+        ...template,
+        instanceId: `${template.id}_cycle${cycle}_${String(i).padStart(2, '0')}`,
+        templateId: template.id,
+      });
+    }
+  }
+  return cards;
+}
+
+function getOpportunityPool(game) {
+  if (!game.decks.opportunity?.length) {
+    game.opportunityCycle = game.opportunityCycle || 0;
+    game.decks.opportunity = createOpportunityDeck(game.opportunityCycle);
+  }
+  return game.decks.opportunity;
+}
+
+function canReserveCard(card) {
+  return Boolean(card?.attribute);
+}
+
 export function expandTemplates(templates, defaultCopies = 1, prefix) {
   const cards = [];
   for (const template of templates) {
@@ -63,7 +90,7 @@ export function createGame({ playerCount = 2, playerNames = [], firstPlayerIndex
   const decks = {
     level1: shuffle(expandTemplates(LEVEL1_TEMPLATES, 1, 'level1'), rng),
     level2: shuffle(expandTemplates(LEVEL2_TEMPLATES, 1, 'level2'), rng),
-    opportunity: shuffle(OPPORTUNITY_TEMPLATES.map((card, i) => ({ ...card, instanceId: `${card.id}_${i + 1}` })), rng),
+    opportunity: createOpportunityDeck(0),
   };
   const game = {
     version: GAME_VERSION,
@@ -89,6 +116,7 @@ export function createGame({ playerCount = 2, playerNames = [], firstPlayerIndex
     log: [],
     pendingOpportunity: null,
     pendingDiscardPlayerIndex: null,
+    opportunityCycle: 0,
     winners: [],
   };
   refillMarket(game, 1);
@@ -168,7 +196,7 @@ export function takeSame(game, type) {
   const player = getCurrentPlayer(game);
   game.supply[type] -= 2;
   player.tokens[type] += 2;
-  log(game, `${player.name} 拿取 2 张${TASK_INFO[type].name}。`);
+  log(game, `${player.name} \u5f03\u8fd8 1 \u5f20${TASK_INFO[type].name}\u3002`);
   finishMainAction(game);
 }
 
@@ -179,7 +207,9 @@ export function reserveMarketCard(game, level, instanceId) {
   const key = levelKey(level);
   const index = game.market[key].findIndex((card) => card.instanceId === instanceId);
   if (index < 0) throw new Error('目标卡不在市场中');
-  const [card] = game.market[key].splice(index, 1);
+  const card = game.market[key][index];
+  if (!canReserveCard(card)) throw new Error('无属性发展卡不能预留');
+  game.market[key].splice(index, 1);
   player.reservedCards.push(card);
   if (game.supply.wild > 0) {
     game.supply.wild -= 1;
@@ -198,7 +228,9 @@ export function reserveBlindCard(game, level) {
   if (player.reservedCards.length >= RESERVE_LIMIT) throw new Error('预留区已满，最多 3 张');
   const key = levelKey(level);
   if (game.decks[key].length === 0) throw new Error('目标牌库已空');
-  const card = game.decks[key].shift();
+  const index = game.decks[key].findIndex(canReserveCard);
+  if (index < 0) throw new Error('目标牌库中没有可预留的发展卡');
+  const [card] = game.decks[key].splice(index, 1);
   player.reservedCards.push(card);
   if (game.supply.wild > 0) {
     game.supply.wild -= 1;
@@ -291,13 +323,13 @@ export function canBuyCard(player, card) {
   return getPaymentOptions(player, card).length > 0;
 }
 
-export function buyCard(game, instanceId, optionIndex = 0) {
+export function buyCard(game, instanceId, optionIndex = 0, rng = Math.random) {
   assertActionPhase(game);
   const player = getCurrentPlayer(game);
   const location = findCardLocation(game, instanceId);
-  if (!location) throw new Error('目标卡不在市场或当前玩家预留区中');
+  if (!location) throw new Error('\u76ee\u6807\u5361\u4e0d\u5728\u5e02\u573a\u6216\u5f53\u524d\u73a9\u5bb6\u9884\u7559\u533a\u4e2d')
   const options = getPaymentOptions(player, location.card);
-  if (options.length === 0) throw new Error('资源不足，无法赢取该发展卡');
+  if (options.length === 0) throw new Error('\u8d44\u6e90\u4e0d\u8db3\uff0c\u65e0\u6cd5\u8d62\u53d6\u8be5\u53d1\u5c55\u5361')
   const option = options[optionIndex] || options[0];
   for (const type of TOKEN_TYPES) {
     const count = option.pay[type] || 0;
@@ -315,54 +347,37 @@ export function buyCard(game, instanceId, optionIndex = 0) {
   }
   player.ownedCards.push(card);
   player.happiness += card.happiness || 0;
-  log(game, `${player.name} 赢取「${card.name}」，支付 ${formatTokens(option.pay)}，获得 ${card.happiness || 0} 开心值。`);
+  log(game, `${player.name} \u8d62\u53d6\u300c${card.name}\u300d\uff0c\u652f\u4ed8 ${formatTokens(option.pay)}\uff0c\u83b7\u5f97 ${card.happiness || 0} \u5f00\u5fc3\u503c\u3002`);
 
-  if ((card.happiness || 0) > 0) {
-    prepareOpportunity(game, card);
-  } else {
-    finishMainAction(game);
-  }
-}
-
-function prepareOpportunity(game, card) {
-  if (game.decks.opportunity.length === 0 && game.discard.opportunity.length > 0) {
-    game.decks.opportunity = shuffle(game.discard.opportunity);
-    game.discard.opportunity = [];
-    log(game, '机遇牌库为空，已将弃牌区洗混形成新牌库。');
-  }
-  if (game.decks.opportunity.length === 0) {
-    finishMainAction(game);
-    return;
-  }
-  game.phase = 'opportunity_choice';
-  game.pendingOpportunity = { playerIndex: game.currentPlayerIndex, sourceCard: card };
-}
-
-export function skipOpportunity(game) {
-  if (game.phase !== 'opportunity_choice') throw new Error('当前没有机遇卡选择');
-  const player = getCurrentPlayer(game);
-  log(game, `${player.name} 选择不翻开机遇卡。`);
-  game.pendingOpportunity = null;
+  const opportunity = (card.happiness || 0) > 0 ? executeForcedOpportunity(game, rng) : null;
   finishMainAction(game);
+  return { card, opportunity };
 }
 
-export function drawOpportunity(game) {
-  if (game.phase !== 'opportunity_choice') throw new Error('当前没有机遇卡选择');
-  if (game.decks.opportunity.length === 0 && game.discard.opportunity.length > 0) {
-    game.decks.opportunity = shuffle(game.discard.opportunity);
-    game.discard.opportunity = [];
-  }
-  if (game.decks.opportunity.length === 0) {
-    game.pendingOpportunity = null;
-    finishMainAction(game);
-    return;
-  }
-  const card = game.decks.opportunity.shift();
+function drawAndResolveOpportunity(game, rng = Math.random) {
+  const pool = getOpportunityPool(game);
+  if (pool.length === 0) return null;
+  const card = pool[Math.floor(rng() * pool.length)];
   const result = resolveOpportunity(game, card);
-  game.discard.opportunity.push(card);
-  log(game, result.message);
+  log(game, `${result.message}\uff08\u5f3a\u5236\u6267\u884c\uff0c\u6709\u653e\u56de\u62bd\u53d6\uff09`);
+  return { card, result };
+}
+
+function executeForcedOpportunity(game, rng = Math.random) {
+  const draw = drawAndResolveOpportunity(game, rng);
   game.pendingOpportunity = null;
+  return draw;
+}
+
+export function skipOpportunity() {
+  throw new Error('\u673a\u9047\u5361\u4e3a\u5f3a\u5236\u6267\u884c\uff0c\u4e0d\u80fd\u8df3\u8fc7');
+}
+
+export function drawOpportunity(game, rng = Math.random) {
+  if (game.phase !== 'opportunity_choice') throw new Error('\u5f53\u524d\u6ca1\u6709\u673a\u9047\u5361\u9009\u62e9');
+  const draw = executeForcedOpportunity(game, rng);
   finishMainAction(game);
+  return draw;
 }
 
 export function resolveOpportunity(game, card) {
@@ -383,27 +398,37 @@ export function resolveOpportunity(game, card) {
   return { winnerIndex: leaders[0].index, reward, message: `机遇「${card.name}」：${winner.name} ${attrName}最多，获得 ${reward} 张${attrName}任务卡。` };
 }
 
+function findOverLimitPlayerIndex(game) {
+  if (totalTokens(getCurrentPlayer(game).tokens) > TOKEN_LIMIT) return game.currentPlayerIndex;
+  return game.players.findIndex((player) => totalTokens(player.tokens) > TOKEN_LIMIT);
+}
+
+function enterDiscardPhaseIfNeeded(game) {
+  const index = findOverLimitPlayerIndex(game);
+  if (index < 0) return false;
+  const player = game.players[index];
+  game.phase = 'discard_tokens';
+  game.pendingDiscardPlayerIndex = index;
+  log(game, `${player.name} \u8d44\u6e90\u8d85\u8fc7 ${TOKEN_LIMIT}\uff0c\u5fc5\u987b\u5f03\u8fd8\u3002`);
+  return true;
+}
+
 function finishMainAction(game) {
-  const player = getCurrentPlayer(game);
-  if (totalTokens(player.tokens) > TOKEN_LIMIT) {
-    game.phase = 'discard_tokens';
-    game.pendingDiscardPlayerIndex = game.currentPlayerIndex;
-    log(game, `${player.name} 资源超过 ${TOKEN_LIMIT}，必须弃还。`);
-    return;
-  }
+  if (enterDiscardPhaseIfNeeded(game)) return;
   completeTurn(game);
 }
 
 export function discardToken(game, type) {
-  if (game.phase !== 'discard_tokens') throw new Error('当前不在弃还资源阶段');
+  if (game.phase !== 'discard_tokens') throw new Error('\u5f53\u524d\u4e0d\u5728\u5f03\u8fd8\u8d44\u6e90\u9636\u6bb5');
   const player = game.players[game.pendingDiscardPlayerIndex];
-  if (!TOKEN_TYPES.includes(type)) throw new Error('未知资源类型');
-  if ((player.tokens[type] || 0) <= 0) throw new Error(`没有${TASK_INFO[type].name}可弃还`);
+  if (!TOKEN_TYPES.includes(type)) throw new Error('\u672a\u77e5\u8d44\u6e90\u7c7b\u578b');
+  if ((player.tokens[type] || 0) <= 0) throw new Error(`\u6ca1\u6709${TASK_INFO[type].name}\u53ef\u5f03\u8fd8`);
   player.tokens[type] -= 1;
   game.supply[type] += 1;
-  log(game, `${player.name} 弃还 1 张${TASK_INFO[type].name}。`);
+  log(game, `${player.name} \u5f03\u8fd8 1 \u5f20${TASK_INFO[type].name}\u3002`);
   if (totalTokens(player.tokens) <= TOKEN_LIMIT) {
     game.pendingDiscardPlayerIndex = null;
+    if (enterDiscardPhaseIfNeeded(game)) return;
     completeTurn(game);
   }
 }
