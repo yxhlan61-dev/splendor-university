@@ -43,7 +43,7 @@ export const LEVEL2_TEMPLATES = [
   { id: 'L2_002', name: '保研上岸', level: 2, attribute: null, cost: {}, flexCost: { type: 'abc-total', amount: 15 }, happiness: 5, copies: 6 },
   { id: 'L2_003', name: '论文产出', level: 2, attribute: 'b', cost: { a: 3, b: 6 }, happiness: 3, copies: 3 },
   { id: 'L2_004', name: '高薪工作', level: 2, attribute: 'b', cost: { a: 2, b: 6, c: 2, d: 2 }, happiness: 4, copies: 3 },
-  { id: 'L2_005', name: '优秀干部', level: 2, attribute: 'c', cost: { c: 6, d: 3 }, happiness: 3, copies: 3 },
+  { id: 'L2_005', name: '优秀干部', level: 2, attribute: 'c', cost: { c: 6, d: 3 }, happiness: 3, copies: 6 },
   { id: 'L2_006', name: '校园名人', level: 2, attribute: 'd', cost: { d: 7 }, happiness: 3, copies: 3 },
   { id: 'L2_007', name: '桌游群主', level: 2, attribute: 'd', cost: { d: 5, e: 5 }, happiness: 3, copies: 3 },
   { id: 'L2_008', name: '游戏大神', level: 2, attribute: 'e', cost: { e: 7 }, happiness: 4, copies: 3 },

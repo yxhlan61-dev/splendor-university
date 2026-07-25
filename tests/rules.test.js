@@ -38,10 +38,11 @@ function testInit() {
   assert.equal(g2.supply.a, 5);
   assert.equal(g2.supply.wild, 5);
   assert.equal(g2.decks.level1.length + g2.market.level1.length, 80);
-  assert.equal(g2.decks.level2.length + g2.market.level2.length, 39);
+  assert.equal(g2.decks.level2.length + g2.market.level2.length, 42);
   assert.equal(g2.decks.opportunity.length, 5);
   assert.equal(LEVEL1_TEMPLATES.find((c) => c.id === 'L1_007').copies, 10);
   assert.equal(LEVEL2_TEMPLATES.find((c) => c.id === 'L2_002').copies, 6);
+  assert.equal(LEVEL2_TEMPLATES.find((c) => c.id === 'L2_005').copies, 6);
   assert.equal(g2.market.level1.length, MARKET_SIZE);
   assert.equal(g2.market.level2.length, MARKET_SIZE);
 
