@@ -19,6 +19,7 @@ let selectedDifferent = new Set();
 let lastError = '';
 let opportunityAnimation = null;
 let gameOverDismissed = false;
+let rulesOpen = false;
 
 const app = document.querySelector('#app');
 
@@ -59,6 +60,7 @@ function startGame(event) {
   game = createGame({ playerCount, playerNames: names, firstPlayerIndex });
   opportunityAnimation = null;
   gameOverDismissed = false;
+  rulesOpen = false;
   selectedDifferent.clear();
   save();
   render();
@@ -69,6 +71,7 @@ function resetGame() {
   game = null;
   opportunityAnimation = null;
   gameOverDismissed = false;
+  rulesOpen = false;
   localStorage.removeItem('universitySplendorGame');
   selectedDifferent.clear();
   render();
@@ -81,6 +84,7 @@ function render() {
   }
   const current = getCurrentPlayer(game);
   app.innerHTML = `
+    ${renderRulesModal()}
     ${renderGameOver()}
     ${renderOpportunityAnimation()}
     <header class="hero">
@@ -89,6 +93,7 @@ function render() {
         <p>本地多人 ${GAME_VERSION} · 每回合四选一 · 15 开心值触发终局</p>
       </div>
       <div class="header-actions">
+        <button id="rulesBtn">\u89c4\u5219\u4ecb\u7ecd</button>
         <button id="saveBtn">保存进度</button>
         <button class="danger" id="resetBtn">重新开始</button>
       </div>
@@ -130,6 +135,10 @@ function render() {
 function renderSetup() {
   const saved = load();
   app.innerHTML = `
+    ${renderRulesModal()}
+    <div class="setup-top-actions">
+      <button id="rulesBtn">\u89c4\u5219\u4ecb\u7ecd</button>
+    </div>
     <main class="setup">
       <div class="setup-card">
         <h1>璀璨宝石之大学模拟器</h1>
@@ -173,6 +182,7 @@ function renderSetup() {
   playerCount.addEventListener('change', updateFields);
   firstMode.addEventListener('change', updateFirst);
   document.querySelector('#setupForm').addEventListener('submit', startGame);
+  bindRulesEvents();
   document.querySelector('#continueBtn')?.addEventListener('click', () => {
     game = saved;
     opportunityAnimation = null;
@@ -350,6 +360,64 @@ function renderLog() {
   `;
 }
 
+
+function renderRulesModal() {
+  if (!rulesOpen) return '';
+  return `
+    <div class="rules-overlay" id="rulesOverlay" role="dialog" aria-modal="true" aria-labelledby="rulesTitle">
+      <article class="rules-modal">
+        <button class="rules-close" id="rulesCloseBtn" aria-label="\u5173\u95ed\u89c4\u5219\u4ecb\u7ecd">\u00d7</button>
+        <header class="rules-modal-header">
+          <p class="rules-kicker">\u65b0\u624b\u5feb\u901f\u4e0a\u624b</p>
+          <h2 id="rulesTitle">\u89c4\u5219\u4ecb\u7ecd</h2>
+          <p>\u8fd9\u662f\u4e00\u6b3e\u4ee5\u300a\u7480\u74a8\u5b9d\u77f3\u300b\u4e3a\u6838\u5fc3\u7684\u5927\u5b66\u4e3b\u9898\u5361\u724c\u6e38\u620f\uff1a\u6536\u96c6\u4efb\u52a1\u5361\uff0c\u8d62\u53d6\u53d1\u5c55\u5361\uff0c\u7d2f\u79ef\u5f00\u5fc3\u503c\u3002</p>
+        </header>
+        <div class="rules-content">
+          <section>
+            <h3>1. \u6e38\u620f\u76ee\u6807</h3>
+            <p>\u73a9\u5bb6\u8f6e\u6d41\u884c\u52a8\uff0c\u901a\u8fc7\u8d62\u53d6\u53d1\u5c55\u5361\u83b7\u5f97\u5f00\u5fc3\u503c\u3002\u4efb\u4e00\u73a9\u5bb6\u8fbe\u5230 <strong>15 \u5f00\u5fc3\u503c</strong> \u540e\u89e6\u53d1\u7ec8\u5c40\uff0c\u8865\u9f50\u5230\u6bcf\u4f4d\u73a9\u5bb6\u884c\u52a8\u6b21\u6570\u76f8\u540c\u540e\u7ed3\u7b97\u3002</p>
+          </section>
+          <section>
+            <h3>2. \u8d44\u6e90\u4e0e\u5c5e\u6027</h3>
+            <p>\u4efb\u52a1\u5361\u6709 5 \u79cd\uff1a\u5b66\u4e60 a\u3001\u79d1\u7814 b\u3001\u5b66\u5de5 c\u3001\u793e\u4ea4 d\u3001\u5a31\u4e50 e\u3002\u4e07\u80fd\u5361\u53ef\u4ee5\u4ee3\u66ff\u4efb\u610f\u4e00\u79cd\u4efb\u52a1\u5361\u652f\u4ed8\u6210\u672c\u3002</p>
+            <div class="rules-token-row">${TASK_TYPES.map((type) => tokenBadge(type, TASK_INFO[type].name, true)).join('')}${tokenBadge('wild', TASK_INFO.wild.name, true)}</div>
+          </section>
+          <section>
+            <h3>3. \u6bcf\u56de\u5408\u53ea\u80fd\u505a 1 \u4e2a\u4e3b\u52a8\u4f5c</h3>
+            <ul>
+              <li><strong>\u62ff 3 \u4e0d\u540c</strong>\uff1a\u4ece\u4f9b\u5e94\u4e2d\u62ff 3 \u79cd\u4e0d\u540c\u666e\u901a\u4efb\u52a1\u5361\u3002</li>
+              <li><strong>\u62ff 2 \u76f8\u540c</strong>\uff1a\u67d0\u79cd\u666e\u901a\u4efb\u52a1\u5361\u4f9b\u5e94\u81f3\u5c11 4 \u5f20\u65f6\uff0c\u53ef\u62ff\u8be5\u79cd 2 \u5f20\u3002</li>
+              <li><strong>\u9884\u7559\u53d1\u5c55\u5361</strong>\uff1a\u53ef\u9884\u7559\u4e00\u5f20\u6709\u5c5e\u6027\u53d1\u5c55\u5361\u6216\u76f2\u9884\u7559\u724c\u5e93\u4e2d\u7684\u6709\u5c5e\u6027\u5361\uff0c\u6700\u591a 3 \u5f20\uff1b\u82e5\u4e07\u80fd\u5361\u6709\u4f9b\u5e94\uff0c\u9884\u7559\u65f6\u83b7\u5f97 1 \u5f20\u4e07\u80fd\u5361\u3002</li>
+              <li><strong>\u8d62\u53d6\u53d1\u5c55\u5361</strong>\uff1a\u652f\u4ed8\u6210\u672c\uff0c\u8d62\u53d6\u5e02\u573a\u6216\u81ea\u5df1\u9884\u7559\u533a\u7684 1 \u5f20\u53d1\u5c55\u5361\u3002</li>
+            </ul>
+          </section>
+          <section>
+            <h3>4. \u53d1\u5c55\u5361\u548c\u6298\u6263</h3>
+            <p>\u6709\u5c5e\u6027\u53d1\u5c55\u5361\u8d62\u53d6\u540e\u4f1a\u6210\u4e3a\u6c38\u4e45\u5c5e\u6027\uff0c\u4eca\u540e\u652f\u4ed8\u5bf9\u5e94\u5c5e\u6027\u6210\u672c\u65f6\uff0c\u6bcf\u5f20\u53ef\u62b5\u6263 1 \u70b9\u3002\u65e0\u5c5e\u6027\u53d1\u5c55\u5361\u53ef\u8d62\u53d6\uff0c\u4f46\u4e0d\u63d0\u4f9b\u6c38\u4e45\u5c5e\u6027\uff0c\u4e5f\u4e0d\u80fd\u9884\u7559\u3002</p>
+          </section>
+          <section>
+            <h3>5. \u7279\u6b8a\u6210\u672c</h3>
+            <ul>
+              <li><strong>\u4fdd\u7814\u4e0a\u5cb8</strong>\uff1a\u5b66\u4e60/\u79d1\u7814/\u5b66\u5de5\u5408\u8ba1 15\uff0c\u4eab\u53d7 a/b/c \u6c38\u4e45\u5c5e\u6027\u603b\u6298\u6263\u3002</li>
+              <li><strong>\u5bbf\u820d\u9886\u8896</strong>\uff1a\u9009\u62e9\u4efb\u610f\u4e00\u79cd\u666e\u901a\u4efb\u52a1\u5361\u5408\u8ba1 8\uff0c\u4eab\u53d7\u6240\u9009\u5c5e\u6027\u6298\u6263\uff0c\u53ef\u7528\u4e07\u80fd\u5361\u8865\u8db3\u3002</li>
+              <li><strong>\u4e30\u5bcc\u751f\u6d3b</strong>\uff1a\u6309\u56fa\u5b9a\u6210\u672c\u652f\u4ed8\uff1a\u5b66\u4e60 3\u3001\u79d1\u7814 3\u3001\u5b66\u5de5 3\u3001\u793e\u4ea4 3\u3001\u5a31\u4e50 3\u3002</li>
+            </ul>
+          </section>
+          <section>
+            <h3>6. \u673a\u9047\u5361\uff08\u5f3a\u5236\u6267\u884c\uff09</h3>
+            <p>\u6bcf\u6b21\u8d62\u53d6\u5f00\u5fc3\u503c\u5927\u4e8e 0 \u7684\u53d1\u5c55\u5361\u540e\uff0c\u7a0b\u5e8f\u4f1a\u5f3a\u5236\u6267\u884c 1 \u5f20\u673a\u9047\u5361\u3002\u673a\u9047\u5361\u4ece\u5b8c\u6574 5 \u5f20\u5361\u6c60\u4e2d\u6709\u653e\u56de\u968f\u673a\u62bd\u53d6\uff0c\u5176\u4e2d\u300c\u4f18\u5e72\u7b54\u8fa9\u300d\u6709 2 \u5f20\u3002</p>
+            <p>\u7ed3\u7b97\u65f6\u6bd4\u8f83\u673a\u9047\u5361\u5bf9\u5e94\u5c5e\u6027\u7684\u6c38\u4e45\u6570\u91cf\uff1a\u82e5\u6709\u552f\u4e00\u6700\u591a\u8005\uff0c\u8be5\u73a9\u5bb6\u83b7\u5f97\u6700\u591a 2 \u5f20\u5bf9\u5e94\u4efb\u52a1\u5361\uff1b\u82e5\u5e76\u5217\u6700\u591a\uff0c\u5219\u65e0\u4eba\u83b7\u5f97\u5956\u52b1\u3002</p>
+          </section>
+          <section>
+            <h3>7. \u8d44\u6e90\u4e0a\u9650\u4e0e\u80dc\u8d1f</h3>
+            <p>\u4efb\u610f\u73a9\u5bb6\u5728\u56de\u5408\u7ed3\u7b97\u4e2d\u8d44\u6e90\u8d85\u8fc7 10 \u5f20\u65f6\uff0c\u5fc5\u987b\u5f03\u8fd8\u5230 10 \u5f20\u624d\u80fd\u7ee7\u7eed\u3002\u7ec8\u5c40\u65f6\u5f00\u5fc3\u503c\u6700\u9ad8\u8005\u83b7\u80dc\uff1b\u82e5\u5e76\u5217\uff0c\u5df2\u8d62\u53d6\u53d1\u5c55\u5361\u66f4\u5c11\u8005\u80dc\u3002</p>
+          </section>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
 function renderGameOver() {
   if (!game || game.phase !== 'game_over' || gameOverDismissed) return '';
   const ranking = [...game.players].sort((a, b) => b.happiness - a.happiness || a.ownedCards.length - b.ownedCards.length);
@@ -379,7 +447,25 @@ function renderGameOver() {
   `;
 }
 
+function bindRulesEvents() {
+  document.querySelector('#rulesBtn')?.addEventListener('click', () => {
+    rulesOpen = true;
+    render();
+  });
+  document.querySelector('#rulesCloseBtn')?.addEventListener('click', () => {
+    rulesOpen = false;
+    render();
+  });
+  document.querySelector('#rulesOverlay')?.addEventListener('click', (event) => {
+    if (event.target.id === 'rulesOverlay') {
+      rulesOpen = false;
+      render();
+    }
+  });
+}
+
 function bindEvents() {
+  bindRulesEvents();
   document.querySelector('#saveBtn')?.addEventListener('click', () => {
     save();
     lastError = '已保存到浏览器本地存储。';
