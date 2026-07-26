@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  advanceToNextActivePlayer,
+  activePlayerCount,
   buyCard,
   createGame,
   discardToken,
   reserveBlindCard,
+  markPlayerInactive,
   reserveMarketCard,
   takeDifferent,
   takeSame,
@@ -87,21 +90,29 @@ function publicRoom(room, clientToken = '') {
     createdAt: room.createdAt,
     updatedAt: room.updatedAt,
     firstMode: room.firstMode,
-    seats: room.seats.map((seat) => ({
-      index: seat.index,
-      name: seat.name,
-      occupied: Boolean(seat.clientId),
-      connected: Boolean(seat.clientId && room.clients.get(seat.clientId)?.connected),
-      isHost: seat.clientId === room.hostClientId,
-    })),
+    seats: room.seats.map((seat) => {
+      const client = seat.clientId ? room.clients.get(seat.clientId) : null;
+      return {
+        index: seat.index,
+        name: seat.name,
+        occupied: Boolean(seat.clientId),
+        connected: Boolean(client?.connected),
+        ready: Boolean(client?.ready || seat.clientId === room.hostClientId),
+        active: room.game?.players?.[seat.index]?.active !== false,
+        isHost: seat.clientId === room.hostClientId,
+      };
+    }),
     viewer: me ? {
       clientId: me.clientId,
       playerIndex: me.playerIndex,
       playerName: me.playerName,
       spectator: me.spectator,
+      ready: Boolean(me.ready || me.clientId === room.hostClientId),
       isHost: me.clientId === room.hostClientId,
     } : null,
     game: room.game,
+    chat: room.chat || [],
+    notices: room.notices || [],
     flash: room.flash || null,
   };
 }
@@ -127,6 +138,33 @@ function roomListItem(room) {
 
 function touch(room) {
   room.updatedAt = new Date().toISOString();
+}
+
+function addNotice(room, type, message) {
+  room.notices = room.notices || [];
+  room.notices.unshift({ id: randomId('N'), type, message, createdAt: new Date().toISOString() });
+  room.notices = room.notices.slice(0, 20);
+}
+
+function addChatMessage(room, client, message) {
+  const text = String(message || '').trim().slice(0, 300);
+  if (!text) throw new Error('\u804a\u5929\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a');
+  room.chat = room.chat || [];
+  room.chat.push({
+    id: randomId('M'),
+    sender: client?.playerName || '\u73a9\u5bb6',
+    playerIndex: client?.playerIndex ?? null,
+    message: text,
+    createdAt: new Date().toISOString(),
+  });
+  room.chat = room.chat.slice(-80);
+}
+
+function readyState(room) {
+  const occupied = room.seats.filter((seat) => seat.clientId);
+  const missing = room.seats.filter((seat) => !seat.clientId);
+  const unready = occupied.filter((seat) => seat.clientId !== room.hostClientId && !room.clients.get(seat.clientId)?.ready);
+  return { occupied, missing, unready, canStart: room.status === 'waiting' && missing.length === 0 && unready.length === 0 };
 }
 
 function markClientSeen(room, clientToken) {
@@ -155,8 +193,11 @@ function broadcast(room) {
 }
 
 function isBrokenRoom(room) {
-  const broken = (value) => /^\?+$/.test(String(value || '').trim());
-  return broken(room.name) || room.seats.some((seat) => broken(seat.name));
+  const broken = (value) => {
+    const text = String(value || '').trim();
+    return text.length >= 2 && /^\?+$/.test(text);
+  };
+  return broken(room.name) && room.seats.some((seat) => seat.clientId && broken(seat.name));
 }
 
 function closeSubscribers(roomId) {
@@ -193,7 +234,12 @@ function latestClientLastSeen(room) {
 }
 
 function hasConnectedSeat(room) {
-  return room.seats.some((seat) => seat.clientId && room.clients.get(seat.clientId)?.connected);
+  return room.seats.some((seat) => {
+    if (!seat.clientId) return false;
+    const client = room.clients.get(seat.clientId);
+    const player = room.game?.players?.[seat.index];
+    return Boolean(client && client.left !== true && player?.active !== false);
+  });
 }
 
 function isAbandoned(room, now) {
@@ -244,13 +290,14 @@ function cleanupRooms() {
     if (
       isBrokenRoom(room) ||
       now - Date.parse(room.updatedAt) > ROOM_TTL_MS ||
+      (room.status === 'closed' && now - Date.parse(room.updatedAt) > 60 * 1000) ||
       (room.status === 'game_over' && now - Date.parse(room.updatedAt) > GAME_OVER_TTL_MS) ||
       (room.status !== 'waiting' && isAbandoned(room, now))
     ) {
       deleteRoom(id);
       continue;
     }
-    if (room.status === 'waiting' && cleanupWaitingRoom(room, now)) {
+    if (room.status === 'waiting' && room.seats.some((seat) => seat.clientId) && cleanupWaitingRoom(room, now)) {
       if (!room.hostClientId) {
         deleteRoom(id);
       } else {
@@ -302,10 +349,13 @@ function createRoom(body) {
       playerIndex: 0,
       playerName: hostName,
       spectator: false,
+      ready: true,
       connected: false,
       lastSeen: Date.now(),
     }]]),
     game: null,
+    chat: [],
+    notices: [],
     flash: null,
   };
   rooms.set(id, room);
@@ -317,8 +367,13 @@ function joinRoom(room, body) {
   const requestedToken = normalizeClientToken(body.clientToken);
   if (requestedToken && room.clients.get(requestedToken)) {
     const existing = room.clients.get(requestedToken);
-    existing.playerName = name || existing.playerName;
+    if (room.status === 'waiting') {
+      existing.playerName = name || existing.playerName;
+      const seat = existing.playerIndex !== null ? room.seats[existing.playerIndex] : null;
+      if (seat?.clientId === requestedToken) seat.name = existing.playerName;
+    }
     existing.lastSeen = Date.now();
+    if (existing.clientId === room.hostClientId) existing.ready = true;
     touch(room);
     return { clientToken: requestedToken, room };
   }
@@ -332,16 +387,56 @@ function joinRoom(room, body) {
   if (emptySeat) {
     emptySeat.clientId = clientId;
     emptySeat.name = name;
-    client = { clientId, playerIndex: emptySeat.index, playerName: name, spectator: false, connected: false, lastSeen: Date.now() };
+    client = { clientId, playerIndex: emptySeat.index, playerName: name, spectator: false, ready: false, connected: false, lastSeen: Date.now() };
   } else if (room.status === 'waiting') {
     throw new Error('\u623f\u95f4\u5df2\u6ee1\uff0c\u8bf7\u5237\u65b0\u623f\u95f4\u5217\u8868\u6216\u7b49\u5f85\u7a7a\u4f4d\u91ca\u653e');
   } else {
-    client = { clientId, playerIndex: null, playerName: name, spectator: true, connected: false, lastSeen: Date.now() };
+    client = { clientId, playerIndex: null, playerName: name, spectator: true, ready: false, connected: false, lastSeen: Date.now() };
   }
   room.clients.set(clientId, client);
   touch(room);
   broadcast(room);
   return { clientToken: clientId, room };
+}
+
+function closeRoomForTooFewPlayers(room) {
+  const message = '\u623f\u95f4\u5185\u53ea\u5269 1 \u540d\u73a9\u5bb6\uff0c\u591a\u4eba\u6e38\u620f\u5df2\u81ea\u52a8\u7ed3\u675f\uff0c\u6240\u6709\u73a9\u5bb6\u5c06\u9000\u51fa\u623f\u95f4\u3002';
+  room.status = 'closed';
+  room.game = null;
+  addNotice(room, 'room_closed', message);
+  room.flash = { id: randomId('F'), type: 'room_closed', message, createdAt: new Date().toISOString() };
+  touch(room);
+}
+
+function handlePlayerLeftDuringGame(room, client, reason = 'leave') {
+  if (!room.game || client.playerIndex === null || client.spectator) return;
+  const player = room.game.players?.[client.playerIndex];
+  const playerName = player?.name || client.playerName || `\u73a9\u5bb6${client.playerIndex + 1}`;
+  const changed = markPlayerInactive(room.game, client.playerIndex);
+  client.connected = false;
+  client.left = true;
+  client.lastSeen = Date.now();
+  const seat = room.seats[client.playerIndex];
+  if (seat) seat.left = true;
+  if (changed) {
+    const message = `${playerName} \u5df2\u9000\u51fa\u623f\u95f4\uff0c\u7cfb\u7edf\u5c06\u81ea\u52a8\u8df3\u8fc7\u8be5\u73a9\u5bb6\u7684\u56de\u5408\u3002`;
+    addNotice(room, 'player_left', message);
+    room.flash = { id: randomId('F'), type: 'player_left', playerIndex: client.playerIndex, message, createdAt: new Date().toISOString() };
+    room.game.log?.unshift?.(message);
+    if (room.game.log) room.game.log = room.game.log.slice(0, 80);
+  }
+  if (activePlayerCount(room.game) <= 1) {
+    closeRoomForTooFewPlayers(room);
+    return;
+  }
+  if (room.game.phase === 'discard_tokens' && room.game.pendingDiscardPlayerIndex === client.playerIndex) {
+    room.game.pendingDiscardPlayerIndex = null;
+    room.game.phase = 'player_action';
+  }
+  if (room.game.currentPlayerIndex === client.playerIndex || room.game.players?.[room.game.currentPlayerIndex]?.active === false) {
+    advanceToNextActivePlayer(room.game, client.playerIndex);
+  }
+  if (room.game.phase === 'game_over') room.status = 'game_over';
 }
 
 function leaveRoom(room, clientToken) {
@@ -351,25 +446,63 @@ function leaveRoom(room, clientToken) {
     const seat = room.seats[client.playerIndex];
     if (seat?.clientId === clientToken) {
       seat.clientId = null;
-      seat.name = `等待玩家${seat.index + 1}`;
+      seat.name = `\u7b49\u5f85\u73a9\u5bb6${seat.index + 1}`;
     }
     room.clients.delete(clientToken);
     if (clientToken === room.hostClientId) {
       const nextHostSeat = room.seats.find((seat) => seat.clientId);
       room.hostClientId = nextHostSeat?.clientId || null;
+      if (room.hostClientId && room.clients.get(room.hostClientId)) room.clients.get(room.hostClientId).ready = true;
     }
   } else if (client.spectator) {
     room.clients.delete(clientToken);
+  } else if (room.status === 'playing') {
+    handlePlayerLeftDuringGame(room, client, 'leave');
   } else {
     client.connected = false;
     client.lastSeen = Date.now();
   }
   markAllStaleConnections(room);
   touch(room);
-  if ((!room.hostClientId && room.status === 'waiting') || (room.status !== 'waiting' && !hasConnectedSeat(room))) {
+  if ((!room.hostClientId && room.status === 'waiting') || (room.status !== 'waiting' && room.status !== 'closed' && !hasConnectedSeat(room))) {
     deleteRoom(room.id);
     return;
   }
+  broadcast(room);
+}
+
+function setReady(room, clientToken, ready) {
+  const client = ensureClient(room, clientToken);
+  if (room.status !== 'waiting') throw new Error('只有等待中的房间可以准备');
+  if (client.spectator || client.playerIndex === null) throw new Error('观战者不能准备');
+  if (client.clientId === room.hostClientId) client.ready = true;
+  else client.ready = Boolean(ready);
+  touch(room);
+  broadcast(room);
+}
+
+function kickPlayer(room, hostToken, playerIndex) {
+  const host = ensureClient(room, hostToken);
+  if (host.clientId !== room.hostClientId) throw new Error('只有房主可以踢出玩家');
+  if (room.status !== 'waiting') throw new Error('只有等待界面可以踢出玩家');
+  const index = Number(playerIndex);
+  const seat = room.seats[index];
+  if (!seat?.clientId) throw new Error('该座位没有玩家');
+  if (seat.clientId === room.hostClientId) throw new Error('房主不能踢出自己');
+  const kickedName = seat.name;
+  room.clients.delete(seat.clientId);
+  seat.clientId = null;
+  seat.name = `等待玩家${seat.index + 1}`;
+  addNotice(room, 'player_kicked', `${kickedName} 已被房主移出房间。`);
+  touch(room);
+  broadcast(room);
+}
+
+function sendChat(room, clientToken, message) {
+  const client = ensureClient(room, clientToken);
+  if (room.status === 'closed') throw new Error('房间已经结束');
+  addChatMessage(room, client, message);
+  touch(room);
   broadcast(room);
 }
 
@@ -378,8 +511,9 @@ function startRoom(room, clientToken) {
   if (client.clientId !== room.hostClientId) throw new Error('只有房主可以开始游戏');
   if (room.status === 'playing' && room.game) return;
   if (room.status !== 'waiting') throw new Error('房间已经结束');
-  const missing = room.seats.filter((seat) => !seat.clientId);
+  const { missing, unready } = readyState(room);
   if (missing.length) throw new Error('请等待所有座位坐满后再开始');
+  if (unready.length) throw new Error('除房主外的所有玩家都准备后才能开始');
   const firstPlayerIndex = room.firstMode === 'random' ? Math.floor(Math.random() * room.playerCount) : 0;
   room.game = createGame({
     playerCount: room.playerCount,
@@ -388,6 +522,7 @@ function startRoom(room, clientToken) {
   });
   room.status = 'playing';
   room.flash = null;
+  addNotice(room, 'game_started', '游戏已开始，祝大家玩得开心。');
   touch(room);
   broadcast(room);
 }
@@ -486,7 +621,10 @@ async function handleApi(req, res, url) {
           sub.closed = true;
           subscribers.get(room.id)?.delete(sub);
           const c = room.clients.get(clientToken);
-          if (c) c.connected = false;
+          if (c) {
+            if (room.status === 'playing' && !c.spectator) handlePlayerLeftDuringGame(room, c, 'disconnect');
+            else c.connected = false;
+          }
           touch(room);
           broadcast(room);
         });
@@ -501,6 +639,24 @@ async function handleApi(req, res, url) {
         const body = await readBody(req);
         leaveRoom(room, body.clientToken);
         json(res, 200, { ok: true });
+        return true;
+      }
+      if (req.method === 'POST' && parts[3] === 'ready') {
+        const body = await readBody(req);
+        setReady(room, body.clientToken, body.ready);
+        json(res, 200, { room: publicRoom(room, body.clientToken) });
+        return true;
+      }
+      if (req.method === 'POST' && parts[3] === 'kick') {
+        const body = await readBody(req);
+        kickPlayer(room, body.clientToken, body.playerIndex);
+        json(res, 200, { room: publicRoom(room, body.clientToken) });
+        return true;
+      }
+      if (req.method === 'POST' && parts[3] === 'chat') {
+        const body = await readBody(req);
+        sendChat(room, body.clientToken, body.message);
+        json(res, 200, { room: publicRoom(room, body.clientToken) });
         return true;
       }
       if (req.method === 'POST' && parts[3] === 'start') {

@@ -103,6 +103,7 @@ export function createGame({ playerCount = 2, playerNames = [], firstPlayerIndex
       ownedCards: [],
       happiness: 0,
       turnsTaken: 0,
+      active: true,
     })),
     currentPlayerIndex: firstPlayerIndex,
     firstPlayerIndex,
@@ -138,6 +139,48 @@ function levelKey(level) {
 
 export function getCurrentPlayer(game) {
   return game.players[game.currentPlayerIndex];
+}
+
+export function isPlayerActive(player) {
+  return player?.active !== false;
+}
+
+export function getActivePlayers(game) {
+  return game.players.filter((player) => isPlayerActive(player));
+}
+
+export function activePlayerCount(game) {
+  return getActivePlayers(game).length;
+}
+
+export function getNextActivePlayerIndex(game, fromIndex = game.currentPlayerIndex) {
+  const total = game.players.length;
+  for (let step = 1; step <= total; step += 1) {
+    const index = (fromIndex + step) % total;
+    if (isPlayerActive(game.players[index])) return index;
+  }
+  return -1;
+}
+
+export function advanceToNextActivePlayer(game, fromIndex = game.currentPlayerIndex) {
+  const nextIndex = getNextActivePlayerIndex(game, fromIndex);
+  if (nextIndex < 0) {
+    game.phase = 'game_over';
+    game.winners = determineWinners(game);
+    return -1;
+  }
+  if (nextIndex <= fromIndex) game.roundNumber += 1;
+  game.currentPlayerIndex = nextIndex;
+  game.phase = 'player_action';
+  return nextIndex;
+}
+
+export function markPlayerInactive(game, playerIndex) {
+  const player = game.players[playerIndex];
+  if (!player || player.active === false) return false;
+  player.active = false;
+  player.leftAt = Date.now();
+  return true;
 }
 
 export function getPermanentCounts(player) {
@@ -435,30 +478,39 @@ export function discardToken(game, type) {
 
 function completeTurn(game) {
   const player = getCurrentPlayer(game);
-  if (!game.endgameTriggered && player.happiness >= WINNING_HAPPINESS) {
-    game.endgameTriggered = true;
-    game.endgameTriggeredBy = player.id;
-    log(game, `${player.name} 达到 ${player.happiness} 开心值，触发终局！`);
+  if (player?.active !== false) {
+    if (!game.endgameTriggered && player.happiness >= WINNING_HAPPINESS) {
+      game.endgameTriggered = true;
+      game.endgameTriggeredBy = player.id;
+      log(game, `${player.name} ?? ${player.happiness} ?????????`);
+    }
+    player.turnsTaken += 1;
   }
-  player.turnsTaken += 1;
   if (game.endgameTriggered && allTurnsEqual(game)) {
     game.phase = 'game_over';
     game.winners = determineWinners(game);
-    log(game, `游戏结束！胜者：${game.winners.map((p) => p.name).join('、')}。`);
+    log(game, `????????${game.winners.map((p) => p.name).join('?')}?`);
     return;
   }
-  game.currentPlayerIndex = (game.currentPlayerIndex + 1) % game.players.length;
-  if (game.currentPlayerIndex === game.firstPlayerIndex) game.roundNumber += 1;
+  const nextIndex = getNextActivePlayerIndex(game, game.currentPlayerIndex);
+  if (nextIndex < 0) {
+    game.phase = 'game_over';
+    game.winners = determineWinners(game);
+    return;
+  }
+  if (nextIndex <= game.currentPlayerIndex) game.roundNumber += 1;
+  game.currentPlayerIndex = nextIndex;
   game.phase = 'player_action';
 }
 
 function allTurnsEqual(game) {
-  const turns = game.players.map((player) => player.turnsTaken);
-  return turns.every((turn) => turn === turns[0]);
+  const activeTurns = getActivePlayers(game).map((player) => player.turnsTaken);
+  return activeTurns.length > 0 && activeTurns.every((turn) => turn === activeTurns[0]);
 }
 
 export function determineWinners(game) {
-  const sorted = [...game.players].sort((p1, p2) => {
+  const players = getActivePlayers(game).length ? getActivePlayers(game) : game.players;
+  const sorted = [...players].sort((p1, p2) => {
     if (p2.happiness !== p1.happiness) return p2.happiness - p1.happiness;
     return p1.ownedCards.length - p2.ownedCards.length;
   });

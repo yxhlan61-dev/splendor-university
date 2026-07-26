@@ -69,7 +69,7 @@ function loadOnlineSession() {
   try {
     const saved = JSON.parse(raw);
     if (!saved?.roomId || !saved?.clientToken) return null;
-    return { ...saved, room: null, connected: false, eventSource: null, pollTimer: null, lastFlashId: null };
+    return { ...saved, room: null, connected: false, eventSource: null, pollTimer: null, exitTimer: null, lastFlashId: null, lastNoticeId: null };
   } catch {
     return null;
   }
@@ -83,6 +83,7 @@ function saveOnlineSession() {
 function clearOnlineSession() {
   online?.eventSource?.close?.();
   if (online?.pollTimer) clearInterval(online.pollTimer);
+  if (online?.exitTimer) clearTimeout(online.exitTimer);
   online = null;
   localStorage.removeItem('universitySplendorOnlineSession');
 }
@@ -108,6 +109,19 @@ async function api(path, options = {}) {
   }
 }
 
+function scheduleOnlineAutoExit(message, delay = 2200) {
+  if (!online || online.exitTimer) return;
+  lastError = message;
+  online.exitTimer = window.setTimeout(() => {
+    clearOnlineSession();
+    game = null;
+    selectedDifferent.clear();
+    setupMode = 'online';
+    refreshRooms({ clearError: false });
+    render();
+  }, delay);
+}
+
 function applyOnlineRoom(room, { realtime = true } = {}) {
   if (!online) return;
   online.room = room;
@@ -116,11 +130,19 @@ function applyOnlineRoom(room, { realtime = true } = {}) {
     stopRoomPolling();
   }
   game = room.game || null;
+  if (!room.viewer && room.status !== 'closed') {
+    scheduleOnlineAutoExit('\u4f60\u5df2\u88ab\u79fb\u51fa\u623f\u95f4\uff0c\u5373\u5c06\u8fd4\u56de\u5927\u5385\u3002');
+  }
+  if (room.status === 'closed') {
+    const message = room.flash?.message || room.notices?.[0]?.message || '\u623f\u95f4\u5df2\u7ed3\u675f\uff0c\u5373\u5c06\u8fd4\u56de\u5927\u5385\u3002';
+    scheduleOnlineAutoExit(message, 2600);
+  }
   if (room.flash?.type === 'opportunity' && room.flash.id !== online.lastFlashId) {
     online.lastFlashId = room.flash.id;
     if (room.flash.card && room.flash.message) showOpportunityAnimation(room.flash.card, room.flash.message);
   }
 }
+
 
 async function refreshRooms({ clearError = true } = {}) {
   roomsLoading = true;
@@ -224,7 +246,7 @@ async function createOnlineRoom(event) {
         firstMode: form.get('firstMode'),
       }),
     });
-    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, pollTimer: null, lastFlashId: null };
+    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, pollTimer: null, exitTimer: null, lastFlashId: null, lastNoticeId: null };
     game = data.room.game || null;
     saveOnlineSession();
     connectRoomEvents();
@@ -253,7 +275,7 @@ async function joinOnlineRoom(roomId, playerName = '') {
       method: 'POST',
       body: JSON.stringify({ playerName: name, clientToken }),
     });
-    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, pollTimer: null, lastFlashId: null };
+    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, pollTimer: null, exitTimer: null, lastFlashId: null, lastNoticeId: null };
     game = data.room.game || null;
     saveOnlineSession();
     connectRoomEvents();
@@ -274,6 +296,56 @@ async function startOnlineRoom() {
       method: 'POST',
       body: JSON.stringify({ clientToken: online.clientToken }),
     });
+    applyOnlineRoom(data.room);
+  } catch (error) {
+    lastError = error.message || String(error);
+  }
+  render();
+}
+
+async function setOnlineReady(ready) {
+  try {
+    lastError = '';
+    const data = await api(`/api/rooms/${encodeURIComponent(online.roomId)}/ready`, {
+      method: 'POST',
+      body: JSON.stringify({ clientToken: online.clientToken, ready }),
+    });
+    applyOnlineRoom(data.room);
+  } catch (error) {
+    lastError = error.message || String(error);
+  }
+  render();
+}
+
+async function kickOnlinePlayer(playerIndex) {
+  const seat = online?.room?.seats?.[playerIndex];
+  if (!seat?.occupied) return;
+  if (!confirm(`\u786e\u5b9a\u8981\u628a ${seat.name} \u8e22\u51fa\u623f\u95f4\u5417\uff1f`)) return;
+  try {
+    lastError = '';
+    const data = await api(`/api/rooms/${encodeURIComponent(online.roomId)}/kick`, {
+      method: 'POST',
+      body: JSON.stringify({ clientToken: online.clientToken, playerIndex }),
+    });
+    applyOnlineRoom(data.room);
+  } catch (error) {
+    lastError = error.message || String(error);
+  }
+  render();
+}
+
+async function sendChatMessage(event) {
+  event.preventDefault();
+  const input = event.currentTarget.querySelector('[name="message"]');
+  const message = String(input?.value || '').trim();
+  if (!message) return;
+  try {
+    lastError = '';
+    const data = await api(`/api/rooms/${encodeURIComponent(online.roomId)}/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ clientToken: online.clientToken, message }),
+    });
+    if (input) input.value = '';
     applyOnlineRoom(data.room);
   } catch (error) {
     lastError = error.message || String(error);
@@ -402,6 +474,7 @@ function render() {
     </header>
 
     ${renderOnlineNotice()}
+    ${renderRoomAlerts()}
     ${lastError ? `<div class="toast error">${escapeHtml(lastError)}</div>` : ''}
 
     <main class="dashboard">
@@ -429,6 +502,7 @@ function render() {
         ${renderPhaseControls()}
         ${renderReserved()}
         ${renderLog()}
+        ${renderChatPanel()}
       </section>
     </main>
   `;
@@ -590,13 +664,19 @@ function bindSetupEvents(saved) {
 function renderOnlineRoom() {
   const room = online.room;
   const viewer = onlineViewer();
-  const canStart = viewer?.isHost && room.seats.every((seat) => seat.occupied);
+  const occupied = room.seats.filter((seat) => seat.occupied).length;
+  const allSeatsFilled = room.seats.every((seat) => seat.occupied);
+  const allGuestsReady = room.seats.every((seat) => !seat.occupied || seat.isHost || seat.ready);
+  const canStart = viewer?.isHost && allSeatsFilled && allGuestsReady;
+  const readyHint = !allSeatsFilled
+    ? '请等待所有座位坐满。'
+    : !allGuestsReady ? '还有玩家未准备。' : '所有玩家已准备，可以开始。';
   app.innerHTML = `
     ${renderRulesModal()}
     <header class="hero">
       <div>
         <h1>${escapeHtml(room.name)}</h1>
-        <p>线上房间 ${escapeHtml(room.id)} · 等待玩家加入 · ${room.seats.filter((s) => s.occupied).length}/${room.playerCount} 人</p>
+        <p>\u7ebf\u4e0a\u623f\u95f4 ${escapeHtml(room.id)} · \u7b49\u5f85\u73a9\u5bb6\u52a0\u5165 · ${occupied}/${room.playerCount} \u4eba</p>
       </div>
       <div class="header-actions">
         <button id="copyRoomBtn">复制房间号</button>
@@ -604,37 +684,81 @@ function renderOnlineRoom() {
         <button class="danger" id="leaveOnlineBtn">退出房间</button>
       </div>
     </header>
+    ${renderRoomAlerts()}
     ${lastError ? `<div class="toast error">${escapeHtml(lastError)}</div>` : ''}
     <main class="setup">
       <div class="setup-card setup-card-wide">
         <h2>房间等待区</h2>
-        <p class="online-notice your-turn">${viewer?.spectator ? '你正在观战。' : `你已进入房间：${escapeHtml(viewer?.playerName || '')}，座位 ${(viewer?.playerIndex ?? 0) + 1}。`} ${online.connected ? '实时同步已连接' : '实时同步连接中，已启用自动刷新兜底'}。</p>
-        <p class="muted">把当前页面地址或房间号 ${escapeHtml(room.id)} 发给其他玩家。所有座位坐满后，房主可以开始游戏。</p>
+        <p class="online-notice your-turn">${viewer?.spectator ? '你正在观战。' : viewer ? `你已进入房间：${escapeHtml(viewer.playerName || '')}，座位 ${(viewer.playerIndex ?? 0) + 1}。` : '你不在该房间中。'} ${online.connected ? '实时同步已连接' : '实时同步连接中，已启用自动刷新兜底'}。</p>
+        <p class="muted">把当前页面地址或房间号 ${escapeHtml(room.id)} 发给其他玩家。除房主外的玩家都点击“准备”后，房主才能开始游戏。</p>
         <div class="seat-grid">
           ${room.seats.map((seat) => `
-            <article class="seat-card ${seat.occupied ? 'occupied' : ''}">
-              <h3>座位 ${seat.index + 1}${seat.isHost ? ' · 房主' : ''}</h3>
+            <article class="seat-card ${seat.occupied ? 'occupied' : ''} ${seat.ready ? 'ready' : ''}">
+              <h3>\u5ea7\u4f4d ${seat.index + 1}${seat.isHost ? ' · \u623f\u4e3b' : ''}</h3>
               <p>${seat.occupied ? escapeHtml(seat.name) : '等待加入'}</p>
-              <small>${seat.connected ? '在线' : seat.occupied ? '暂离' : '空位'}</small>
+              <small>${seat.connected ? '\u5728\u7ebf' : seat.occupied ? '\u6682\u79bb' : '\u7a7a\u4f4d'} · ${seat.isHost ? '\u623f\u4e3b\u65e0\u9700\u51c6\u5907' : seat.occupied ? (seat.ready ? '\u5df2\u51c6\u5907' : '\u672a\u51c6\u5907') : '\u7b49\u5f85\u4e2d'}</small>
+              ${viewer?.isHost && seat.occupied && !seat.isHost ? `<button class="danger seat-kick" data-kick-player="${seat.index}">踢出</button>` : ''}
             </article>
           `).join('')}
         </div>
+        ${viewer && !viewer.isHost && !viewer.spectator ? `<button id="readyOnlineBtn" class="${viewer.ready ? '' : 'primary'} wide" data-ready="${viewer.ready ? 'false' : 'true'}">${viewer.ready ? '取消准备' : '准备'}</button>` : ''}
+        <p class="muted ready-hint">${escapeHtml(readyHint)}</p>
         <button id="startOnlineBtn" class="primary wide" ${canStart ? '' : 'disabled'}>${viewer?.isHost ? '开始线上游戏' : '等待房主开始'}</button>
+        ${renderChatPanel()}
       </div>
     </main>
   `;
   bindEvents();
 }
 
+
 function renderOnlineNotice() {
   if (!isOnline()) return '';
   const viewer = onlineViewer();
+  if (online.room?.status === 'closed') {
+    return `<div class="online-notice danger-notice">${escapeHtml(online.room?.flash?.message || '房间已结束，即将退出。')}</div>`;
+  }
   const turn = isOnlineActionTurn();
   const text = viewer?.spectator
     ? '你正在观战，不能执行游戏动作。'
     : turn ? '轮到你操作。' : '请等待其他玩家操作。';
   return `<div class="online-notice ${turn ? 'your-turn' : ''}">${escapeHtml(text)} ${online.connected ? '已连接' : '连接中断，自动重连中'}。</div>`;
 }
+
+function renderRoomAlerts() {
+  if (!isOnline()) return '';
+  const notices = online.room?.notices || [];
+  const important = notices.filter((notice) => ['player_left', 'room_closed', 'player_kicked'].includes(notice.type)).slice(0, 2);
+  if (!important.length) return '';
+  return `<div class="room-alerts" aria-live="assertive">${important.map((notice) => `<div class="room-alert ${notice.type}">! ${escapeHtml(notice.message)}</div>`).join('')}</div>`;
+}
+
+function renderChatPanel() {
+  if (!isOnline()) return '';
+  const room = online.room;
+  const viewer = onlineViewer();
+  const messages = room?.chat || [];
+  const canChat = Boolean(viewer) && room?.status !== 'closed';
+  return `
+    <section class="panel chat-panel">
+      <h2>房间聊天</h2>
+      <div class="chat-messages">
+        ${messages.length ? messages.map((msg) => `
+          <div class="chat-message ${viewer?.playerIndex === msg.playerIndex ? 'mine' : ''}">
+            <strong>${escapeHtml(msg.sender || '玩家')}</strong>
+            <span>${escapeHtml(new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</span>
+            <p>${escapeHtml(msg.message)}</p>
+          </div>
+        `).join('') : '<p class="muted">暂无聊天消息。</p>'}
+      </div>
+      <form id="chatForm" class="chat-form">
+        <input name="message" maxlength="300" autocomplete="off" placeholder="输入消息，回车发送" ${canChat ? '' : 'disabled'} />
+        <button type="submit" ${canChat ? '' : 'disabled'}>发送</button>
+      </form>
+    </section>
+  `;
+}
+
 
 function showOpportunityAnimation(card, message) {
   const id = Date.now();
@@ -672,20 +796,22 @@ function renderPlayers() {
   const viewer = onlineViewer();
   return `<section class="players">${game.players.map((player, index) => {
     const permanent = getPermanentCounts(player);
-    const badges = `${index === game.currentPlayerIndex ? '<span>当前</span>' : ''}${viewer?.playerIndex === index ? '<span>你</span>' : ''}`;
+    const inactive = player.active === false;
+    const badges = `${index === game.currentPlayerIndex ? '<span>\u5f53\u524d</span>' : ''}${viewer?.playerIndex === index ? '<span>\u4f60</span>' : ''}${inactive ? '<span>\u5df2\u9000\u51fa</span>' : ''}`;
     return `
-      <article class="panel player ${index === game.currentPlayerIndex ? 'active' : ''} ${viewer?.playerIndex === index ? 'me' : ''}">
+      <article class="panel player ${index === game.currentPlayerIndex ? 'active' : ''} ${viewer?.playerIndex === index ? 'me' : ''} ${inactive ? 'inactive' : ''}">
         <h2>${escapeHtml(player.name)} ${badges}</h2>
-        <p class="score">开心值 ${player.happiness}</p>
-        <p>资源 ${totalTokens(player.tokens)}/${TOKEN_LIMIT}</p>
+        <p class=\"score\">\u5f00\u5fc3\u503c ${player.happiness}</p>
+        <p>\u8d44\u6e90 ${totalTokens(player.tokens)}/${TOKEN_LIMIT}</p>
         <div class="tokens small">${TOKEN_TYPES.map((t) => tokenBadge(t, player.tokens[t], true)).join('')}</div>
-        <p>永久属性</p>
+        <p>\u6c38\u4e45\u6298\u6263</p>
         <div class="tokens small">${TASK_TYPES.map((t) => tokenBadge(t, permanent[t], true)).join('')}</div>
-        <p>已赢取 ${player.ownedCards.length} 张 · 预留 ${player.reservedCards.length}/${RESERVE_LIMIT} 张 · 已行动 ${player.turnsTaken} 次</p>
+        <p>\u53d1\u5c55\u5361 ${player.ownedCards.length} \u5f20 &middot; \u9884\u7559 ${player.reservedCards.length}/${RESERVE_LIMIT} \u5f20 &middot; \u5df2\u884c\u52a8 ${player.turnsTaken} \u56de\u5408</p>
       </article>
     `;
   }).join('')}</section>`;
 }
+
 
 function renderPhaseControls() {
   if (game.phase === 'game_over') return '';
@@ -854,7 +980,7 @@ function renderRulesModal() {
             <p>\u53d1\u5c55\u5361\u662f\u4e3b\u8981\u7684\u5f97\u5206\u548c\u6298\u6263\u6765\u6e90\uff0c\u724c\u9762\u4e0a\u4f1a\u663e\u793a\u300c\u5c5e\u6027\u300d\u3001\u300c\u6210\u672c\u300d\u548c\u300c\u5f00\u5fc3\u503c\u300d\u3002</p>
             <ul>
               <li><strong>\u6210\u672c</strong>\uff1a\u8868\u793a\u8d62\u53d6\u8fd9\u5f20\u5361\u9700\u8981\u652f\u4ed8\u7684\u4efb\u52a1\u5361\u6570\u91cf\u3002\u4f8b\u5982\u6210\u672c\u5199\u7740\u300c\u5b66\u4e60 2\u3001\u793e\u4ea4 1\u300d\uff0c\u5c31\u9700\u8981\u4ea4\u56de 2 \u5f20\u5b66\u4e60\u548c 1 \u5f20\u793e\u4ea4\u4efb\u52a1\u5361\u3002</li>
-              <li><strong>\u5f00\u5fc3\u503c</strong>\uff1a\u5361\u724c\u53f3\u4e0a\u89d2\u7684\u6570\u5b57\u662f\u8fd9\u5f20\u5361\u63d0\u4f9b\u7684\u5f00\u5fc3\u503c\u3002\u8d62\u53d6\u540e\u7acb\u5373\u52a0\u5230\u73a9\u5bb6\u603b\u5f00\u5fc3\u503c\uff0c\u7528\u4e8e\u89e6\u53d1 15 \u5f00\u5fc3\u503c\u7ec8\u5c40\u548c\u6700\u7ec8\u80dc\u8d1f\u7ed3\u7b97\u3002\u6ca1\u6709\u6570\u5b57\u6216\u4e3a 0 \u5219\u4e0d\u52a0\u5206\u3002</li>
+              <li><strong>???</strong>\uff1a\u5361\u724c\u53f3\u4e0a\u89d2\u7684\u6570\u5b57\u662f\u8fd9\u5f20\u5361\u63d0\u4f9b\u7684\u5f00\u5fc3\u503c\u3002\u8d62\u53d6\u540e\u7acb\u5373\u52a0\u5230\u73a9\u5bb6\u603b\u5f00\u5fc3\u503c\uff0c\u7528\u4e8e\u89e6\u53d1 15 \u5f00\u5fc3\u503c\u7ec8\u5c40\u548c\u6700\u7ec8\u80dc\u8d1f\u7ed3\u7b97\u3002\u6ca1\u6709\u6570\u5b57\u6216\u4e3a 0 \u5219\u4e0d\u52a0\u5206\u3002</li>
               <li><strong>\u6298\u6263</strong>\uff1a\u6709\u5c5e\u6027\u53d1\u5c55\u5361\u8d62\u53d6\u540e\u4f1a\u6210\u4e3a\u6c38\u4e45\u5c5e\u6027\uff0c\u4eca\u540e\u652f\u4ed8\u5bf9\u5e94\u5c5e\u6027\u6210\u672c\u65f6\uff0c\u6bcf\u5f20\u53ef\u62b5\u6263 1 \u70b9\u3002\u4e07\u80fd\u5361\u53ef\u5728\u6298\u6263\u540e\u8865\u8db3\u4efb\u610f\u4e00\u79cd\u4e0d\u591f\u7684\u6210\u672c\u3002</li>
               <li><strong>\u65e0\u5c5e\u6027\u5361</strong>\uff1a\u53ef\u4ee5\u8d62\u53d6\u5e76\u83b7\u5f97\u724c\u9762\u5f00\u5fc3\u503c\uff0c\u4f46\u4e0d\u63d0\u4f9b\u6c38\u4e45\u5c5e\u6027\uff0c\u4e5f\u4e0d\u80fd\u9884\u7559\u3002</li>
             </ul>
@@ -938,6 +1064,9 @@ function bindEvents() {
   document.querySelector('#resetBtn')?.addEventListener('click', resetGame);
   document.querySelector('#leaveOnlineBtn')?.addEventListener('click', leaveOnlineRoom);
   document.querySelector('#startOnlineBtn')?.addEventListener('click', startOnlineRoom);
+  document.querySelector('#readyOnlineBtn')?.addEventListener('click', (event) => setOnlineReady(event.currentTarget.dataset.ready === 'true'));
+  document.querySelectorAll('[data-kick-player]').forEach((btn) => btn.addEventListener('click', () => kickOnlinePlayer(Number(btn.dataset.kickPlayer))));
+  document.querySelector('#chatForm')?.addEventListener('submit', sendChatMessage);
   document.querySelector('#copyRoomBtn')?.addEventListener('click', async () => {
     const text = `${location.origin}${location.pathname} 房间号：${online?.room?.id || online?.roomId || ''}`;
     await navigator.clipboard?.writeText(text).catch(() => {});
