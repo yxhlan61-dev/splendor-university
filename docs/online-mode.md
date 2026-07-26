@@ -47,3 +47,13 @@ http://192.168.1.23:5500/
 - 当前房间数据存储在 `server.js` 进程内存中；服务器重启后线上房间会清空。
 - 房间 12 小时无更新会自动过期清理。
 - 若要跨公网游玩，需要把运行 `server.js` 的机器/服务暴露为公网可访问地址。
+
+## Cloudflare Workers 动态部署
+
+本项目已增加 `wrangler.jsonc` 和 `worker/index.js`，可作为 Cloudflare Workers 动态站点部署：
+
+```bash
+npm run deploy
+```
+
+部署后，静态页面由 Workers Assets 托管，线上房间 API 由 Worker + Durable Object 托管。这样线上房间不依赖本地 `server.js` 进程，适合公开网页多人游玩。

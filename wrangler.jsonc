@@ -1,0 +1,25 @@
+﻿{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "splendor-university",
+  "main": "./worker/index.js",
+  "compatibility_date": "2026-07-26",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GAME_LOBBY",
+        "class_name": "GameLobby"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["GameLobby"]
+    }
+  ]
+}

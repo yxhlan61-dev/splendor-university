@@ -23,4 +23,6 @@ for (const item of ['index.html', 'src', 'server.js', 'package.json']) {
   }
 }
 
+fs.writeFileSync(path.join(dist, '.assetsignore'), 'server.js\npackage.json\n', 'utf8');
+
 console.log('Site and online room server copied to dist/');
