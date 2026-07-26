@@ -1,4 +1,4 @@
-﻿import {
+import {
   buyCard,
   createGame,
   discardToken,
@@ -9,7 +9,9 @@
 } from '../src/game.js';
 
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
-const WAITING_DISCONNECTED_TTL_MS = 5 * 60 * 1000;
+const WAITING_DISCONNECTED_TTL_MS = 90 * 1000;
+const ABANDONED_ROOM_TTL_MS = 5 * 60 * 1000;
+const GAME_OVER_TTL_MS = 30 * 60 * 1000;
 const encoder = new TextEncoder();
 
 function randomId(prefix = '') {
@@ -128,22 +130,46 @@ export class GameLobby {
     return false;
   }
 
+  markAllStaleConnections(room) {
+    let changed = false;
+    for (const client of Object.values(room.clients || {})) {
+      changed = this.markStaleConnection(room, client) || changed;
+    }
+    return changed;
+  }
+
+  latestClientLastSeen(room) {
+    const seen = Object.values(room.clients || {}).map((client) => Number(client.lastSeen || 0));
+    return seen.length ? Math.max(...seen) : 0;
+  }
+
+  hasConnectedSeat(room) {
+    return room.seats.some((seat) => seat.clientId && room.clients?.[seat.clientId]?.connected);
+  }
+
+  isAbandoned(room, now) {
+    return !this.hasConnectedSeat(room) && now - this.latestClientLastSeen(room) > ABANDONED_ROOM_TTL_MS;
+  }
+
+  deleteRoom(roomId) {
+    this.rooms.delete(roomId);
+    this.closeSubscribers(roomId);
+  }
+
   cleanupWaitingRoom(room, now) {
     let changed = false;
     for (const seat of room.seats) {
       if (!seat.clientId) continue;
       const client = room.clients?.[seat.clientId];
-      if (client) changed = this.markStaleConnection(room, client) || changed;
       const inactive = !client || (!client.connected && now - (client.lastSeen || 0) > WAITING_DISCONNECTED_TTL_MS);
       if (inactive) {
         if (client) delete room.clients[seat.clientId];
         seat.clientId = null;
-        seat.name = `等待玩家${seat.index + 1}`;
+        seat.name = `\u7b49\u5f85\u73a9\u5bb6${seat.index + 1}`;
         changed = true;
       }
     }
     for (const [clientId, client] of Object.entries(room.clients || {})) {
-      changed = this.markStaleConnection(room, client) || changed;
       if (client.spectator && !client.connected && now - (client.lastSeen || 0) > WAITING_DISCONNECTED_TTL_MS) {
         delete room.clients[clientId];
         changed = true;
@@ -161,19 +187,26 @@ export class GameLobby {
     const now = Date.now();
     let changed = false;
     for (const [id, room] of [...this.rooms]) {
-      if (this.isBrokenRoom(room) || now - Date.parse(room.updatedAt) > ROOM_TTL_MS) {
-        this.rooms.delete(id);
-        this.closeSubscribers(id);
+      const staleChanged = this.markAllStaleConnections(room);
+      if (
+        this.isBrokenRoom(room) ||
+        now - Date.parse(room.updatedAt) > ROOM_TTL_MS ||
+        (room.status === 'game_over' && now - Date.parse(room.updatedAt) > GAME_OVER_TTL_MS) ||
+        (room.status !== 'waiting' && this.isAbandoned(room, now))
+      ) {
+        this.deleteRoom(id);
         changed = true;
         continue;
       }
       if (room.status === 'waiting' && this.cleanupWaitingRoom(room, now)) {
         if (!room.hostClientId) {
-          this.rooms.delete(id);
-          this.closeSubscribers(id);
+          this.deleteRoom(id);
         } else {
           touch(room);
         }
+        changed = true;
+      } else if (staleChanged) {
+        touch(room);
         changed = true;
       }
     }
@@ -262,6 +295,8 @@ export class GameLobby {
       emptySeat.clientId = clientId;
       emptySeat.name = name;
       client = { clientId, playerIndex: emptySeat.index, playerName: name, spectator: false, connected: false, lastSeen: Date.now() };
+    } else if (room.status === 'waiting') {
+      throw new Error('\u623f\u95f4\u5df2\u6ee1\uff0c\u8bf7\u5237\u65b0\u623f\u95f4\u5217\u8868\u6216\u7b49\u5f85\u7a7a\u4f4d\u91ca\u653e');
     } else {
       client = { clientId, playerIndex: null, playerName: name, spectator: true, connected: false, lastSeen: Date.now() };
     }
@@ -290,10 +325,10 @@ export class GameLobby {
       client.connected = false;
       client.lastSeen = Date.now();
     }
+    this.markAllStaleConnections(room);
     touch(room);
-    if (!room.hostClientId && room.status === 'waiting') {
-      this.rooms.delete(room.id);
-      this.closeSubscribers(room.id);
+    if ((!room.hostClientId && room.status === 'waiting') || (room.status !== 'waiting' && !this.hasConnectedSeat(room))) {
+      this.deleteRoom(room.id);
     }
   }
 

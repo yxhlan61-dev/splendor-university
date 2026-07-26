@@ -23,6 +23,7 @@ let rulesOpen = false;
 let setupMode = 'menu';
 let rooms = [];
 let roomsLoading = false;
+let joiningRoomId = null;
 let online = loadOnlineSession();
 
 const app = document.querySelector('#app');
@@ -183,8 +184,11 @@ async function createOnlineRoom(event) {
 }
 
 async function joinOnlineRoom(roomId, playerName = '') {
-  const name = playerName || prompt('请输入你的玩家名称：', '线上玩家');
+  if (joiningRoomId) return;
+  const name = playerName || prompt('\u8bf7\u8f93\u5165\u4f60\u7684\u73a9\u5bb6\u540d\u79f0\uff1a', '\u7ebf\u4e0a\u73a9\u5bb6');
   if (name === null) return;
+  joiningRoomId = roomId;
+  render();
   try {
     lastError = '';
     const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
@@ -197,6 +201,9 @@ async function joinOnlineRoom(roomId, playerName = '') {
     connectRoomEvents();
   } catch (error) {
     lastError = error.message || String(error);
+    await refreshRooms();
+  } finally {
+    joiningRoomId = null;
   }
   render();
 }
@@ -464,8 +471,9 @@ function renderRoomListItem(room) {
   const statusText = { waiting: '等待中', playing: '游戏中', game_over: '已结束' }[room.status] || room.status;
   const canJoin = room.status === 'waiting' && room.occupied < room.playerCount;
   const canWatch = room.status !== 'waiting';
-  const buttonText = canJoin ? '进入房间' : (room.status === 'waiting' ? '房间已满' : '观战');
-  const buttonAttrs = canJoin || canWatch ? `data-join-room="${escapeHtml(room.id)}"` : 'disabled';
+  const isJoining = joiningRoomId === room.id;
+  const buttonText = isJoining ? '\u8fdb\u5165\u4e2d...' : (canJoin ? '\u8fdb\u5165\u623f\u95f4' : (room.status === 'waiting' ? '\u623f\u95f4\u5df2\u6ee1' : '\u89c2\u6218'));
+  const buttonAttrs = !isJoining && (canJoin || canWatch) ? `data-join-room="${escapeHtml(room.id)}"` : 'disabled';
   const hint = canJoin
     ? '可加入空位'
     : (room.status === 'waiting' ? '座位已满；如果是别人退出后的旧房间，请点刷新，服务器会自动释放离线空位。' : '游戏已开始，只能观战。');

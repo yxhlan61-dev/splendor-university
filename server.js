@@ -17,7 +17,9 @@ const PORT = Number(process.env.PORT || 5500);
 const rooms = new Map();
 const subscribers = new Map();
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
-const WAITING_DISCONNECTED_TTL_MS = 5 * 60 * 1000;
+const WAITING_DISCONNECTED_TTL_MS = 90 * 1000;
+const ABANDONED_ROOM_TTL_MS = 5 * 60 * 1000;
+const GAME_OVER_TTL_MS = 30 * 60 * 1000;
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -150,22 +152,46 @@ function markStaleConnection(room, client) {
   return false;
 }
 
+function markAllStaleConnections(room) {
+  let changed = false;
+  for (const client of room.clients.values()) {
+    changed = markStaleConnection(room, client) || changed;
+  }
+  return changed;
+}
+
+function latestClientLastSeen(room) {
+  const seen = [...room.clients.values()].map((client) => Number(client.lastSeen || 0));
+  return seen.length ? Math.max(...seen) : 0;
+}
+
+function hasConnectedSeat(room) {
+  return room.seats.some((seat) => seat.clientId && room.clients.get(seat.clientId)?.connected);
+}
+
+function isAbandoned(room, now) {
+  return !hasConnectedSeat(room) && now - latestClientLastSeen(room) > ABANDONED_ROOM_TTL_MS;
+}
+
+function deleteRoom(roomId) {
+  rooms.delete(roomId);
+  closeSubscribers(roomId);
+}
+
 function cleanupWaitingRoom(room, now) {
   let changed = false;
   for (const seat of room.seats) {
     if (!seat.clientId) continue;
     const client = room.clients.get(seat.clientId);
-    if (client) changed = markStaleConnection(room, client) || changed;
     const inactive = !client || (!client.connected && now - (client.lastSeen || 0) > WAITING_DISCONNECTED_TTL_MS);
     if (inactive) {
       if (client) room.clients.delete(seat.clientId);
       seat.clientId = null;
-      seat.name = `等待玩家${seat.index + 1}`;
+      seat.name = `\u7b49\u5f85\u73a9\u5bb6${seat.index + 1}`;
       changed = true;
     }
   }
   for (const [clientId, client] of room.clients) {
-    changed = markStaleConnection(room, client) || changed;
     if (client.spectator && !client.connected && now - (client.lastSeen || 0) > WAITING_DISCONNECTED_TTL_MS) {
       room.clients.delete(clientId);
       changed = true;
@@ -182,18 +208,24 @@ function cleanupWaitingRoom(room, now) {
 function cleanupRooms() {
   const now = Date.now();
   for (const [id, room] of [...rooms]) {
-    if (isBrokenRoom(room) || now - Date.parse(room.updatedAt) > ROOM_TTL_MS) {
-      rooms.delete(id);
-      closeSubscribers(id);
+    const staleChanged = markAllStaleConnections(room);
+    if (
+      isBrokenRoom(room) ||
+      now - Date.parse(room.updatedAt) > ROOM_TTL_MS ||
+      (room.status === 'game_over' && now - Date.parse(room.updatedAt) > GAME_OVER_TTL_MS) ||
+      (room.status !== 'waiting' && isAbandoned(room, now))
+    ) {
+      deleteRoom(id);
       continue;
     }
     if (room.status === 'waiting' && cleanupWaitingRoom(room, now)) {
       if (!room.hostClientId) {
-        rooms.delete(id);
-        closeSubscribers(id);
+        deleteRoom(id);
       } else {
         touch(room);
       }
+    } else if (staleChanged) {
+      touch(room);
     }
   }
 }
@@ -257,6 +289,8 @@ function joinRoom(room, body) {
     emptySeat.clientId = clientId;
     emptySeat.name = name;
     client = { clientId, playerIndex: emptySeat.index, playerName: name, spectator: false, connected: false, lastSeen: Date.now() };
+  } else if (room.status === 'waiting') {
+    throw new Error('\u623f\u95f4\u5df2\u6ee1\uff0c\u8bf7\u5237\u65b0\u623f\u95f4\u5217\u8868\u6216\u7b49\u5f85\u7a7a\u4f4d\u91ca\u653e');
   } else {
     client = { clientId, playerIndex: null, playerName: name, spectator: true, connected: false, lastSeen: Date.now() };
   }
@@ -286,11 +320,10 @@ function leaveRoom(room, clientToken) {
     client.connected = false;
     client.lastSeen = Date.now();
   }
+  markAllStaleConnections(room);
   touch(room);
-  if (!room.hostClientId && room.status === 'waiting') {
-    rooms.delete(room.id);
-    subscribers.get(room.id)?.forEach((sub) => sub.res.end());
-    subscribers.delete(room.id);
+  if ((!room.hostClientId && room.status === 'waiting') || (room.status !== 'waiting' && !hasConnectedSeat(room))) {
+    deleteRoom(room.id);
     return;
   }
   broadcast(room);
