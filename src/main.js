@@ -88,13 +88,24 @@ function clearOnlineSession() {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `请求失败：${response.status}`);
-  return data;
+  const { timeoutMs = 15000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(path, {
+      headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
+      ...fetchOptions,
+      signal: fetchOptions.signal || controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `\u8bf7\u6c42\u5931\u8d25\uff1a${response.status}`);
+    return data;
+  } catch (error) {
+    if (error?.name === 'AbortError') throw new Error('\u8bf7\u6c42\u8d85\u65f6\uff0c\u8bf7\u5237\u65b0\u623f\u95f4\u5217\u8868\u540e\u91cd\u8bd5\u3002');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function applyOnlineRoom(room, { realtime = true } = {}) {

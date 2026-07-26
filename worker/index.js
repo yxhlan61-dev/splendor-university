@@ -9,7 +9,7 @@ import {
 } from '../src/game.js';
 
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
-const WAITING_DISCONNECTED_TTL_MS = 30 * 1000;
+const WAITING_DISCONNECTED_TTL_MS = 10 * 60 * 1000;
 const ABANDONED_ROOM_TTL_MS = 5 * 60 * 1000;
 const GAME_OVER_TTL_MS = 30 * 60 * 1000;
 const encoder = new TextEncoder();
@@ -231,24 +231,58 @@ export class GameLobby {
   closeSubscribers(roomId) {
     const list = this.subscribers.get(roomId);
     if (!list) return;
-    for (const sub of list) {
-      sub.writer.close().catch(() => {});
-    }
+    for (const sub of [...list]) this.dropSubscriber(roomId, sub);
     this.subscribers.delete(roomId);
   }
 
-  async broadcast(room) {
-    const list = this.subscribers.get(room.id);
-    if (!list) return;
-    for (const sub of [...list]) {
-      try {
-        await sub.writer.write(encoder.encode(`event: room\ndata: ${JSON.stringify(publicRoom(room, sub.clientToken))}\n\n`));
-      } catch {
-        list.delete(sub);
-      }
-    }
+  dropSubscriber(roomId, sub) {
+    sub.closed = true;
+    const list = this.subscribers.get(roomId);
+    list?.delete(sub);
+    if (list?.size === 0) this.subscribers.delete(roomId);
+    sub.writer.close().catch(() => {});
   }
 
+  queueSubscriberWrite(room, sub) {
+    const list = this.subscribers.get(room.id);
+    if (!list?.has(sub) || sub.closed) return;
+    sub.latestPayload = encoder.encode(`event: room\ndata: ${JSON.stringify(publicRoom(room, sub.clientToken))}\n\n`);
+    if (sub.writing) return;
+
+    const pump = () => {
+      if (sub.closed || !list.has(sub)) return;
+      const payload = sub.latestPayload;
+      sub.latestPayload = null;
+      if (!payload) {
+        sub.writing = false;
+        return;
+      }
+      sub.writing = true;
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) this.dropSubscriber(room.id, sub);
+      }, 1500);
+      sub.writer.write(payload)
+        .then(() => {
+          settled = true;
+          clearTimeout(timer);
+          pump();
+        })
+        .catch(() => {
+          settled = true;
+          clearTimeout(timer);
+          this.dropSubscriber(room.id, sub);
+        });
+    };
+
+    pump();
+  }
+
+  broadcast(room) {
+    const list = this.subscribers.get(room.id);
+    if (!list?.size) return;
+    for (const sub of [...list]) this.queueSubscriberWrite(room, sub);
+  }
   ensureRoom(id) {
     const room = this.rooms.get(String(id || '').toUpperCase());
     if (!room) throw new Error('房间不存在或已过期');
@@ -260,6 +294,13 @@ export class GameLobby {
     if (!client) throw new Error('你还没有进入该房间');
     client.lastSeen = Date.now();
     return client;
+  }
+
+  markClientSeen(room, clientToken) {
+    const client = room.clients?.[clientToken];
+    if (!client) return false;
+    client.lastSeen = Date.now();
+    return true;
   }
 
   createRoom(body) {
@@ -362,7 +403,8 @@ export class GameLobby {
   startRoom(room, clientToken) {
     const client = this.ensureClient(room, clientToken);
     if (client.clientId !== room.hostClientId) throw new Error('只有房主可以开始游戏');
-    if (room.status !== 'waiting') throw new Error('房间已经开始或结束');
+    if (room.status === 'playing' && room.game) return;
+    if (room.status !== 'waiting') throw new Error('房间已经结束');
     const missing = room.seats.filter((seat) => !seat.clientId);
     if (missing.length) throw new Error('请等待所有座位坐满后再开始');
     const firstPlayerIndex = room.firstMode === 'random' ? Math.floor(Math.random() * room.playerCount) : 0;
@@ -437,17 +479,15 @@ export class GameLobby {
     if (!this.subscribers.has(room.id)) this.subscribers.set(room.id, new Set());
     this.subscribers.get(room.id).add(sub);
 
-    await writer.write(encoder.encode(`event: room\ndata: ${JSON.stringify(publicRoom(room, clientToken))}\n\n`));
-    await this.broadcast(room);
+    this.broadcast(room);
 
-    request.signal.addEventListener('abort', async () => {
-      this.subscribers.get(room.id)?.delete(sub);
+    request.signal.addEventListener('abort', () => {
+      this.dropSubscriber(room.id, sub);
       const c = room.clients?.[clientToken];
       if (c) c.connected = false;
       touch(room);
-      await this.save();
-      await this.broadcast(room);
-      writer.close().catch(() => {});
+      this.save().catch(() => {});
+      this.broadcast(room);
     });
 
     return new Response(stream.readable, {
@@ -489,6 +529,7 @@ export class GameLobby {
         const room = this.ensureRoom(parts[2]);
         if (request.method === 'GET' && parts.length === 3) {
           const clientToken = url.searchParams.get('clientToken') || '';
+          if (this.markClientSeen(room, clientToken)) await this.save();
           return json(200, { room: publicRoom(room, clientToken) });
         }
         if (request.method === 'GET' && parts[3] === 'events') {
@@ -498,28 +539,28 @@ export class GameLobby {
         if (request.method === 'POST' && parts[3] === 'join') {
           const joined = this.joinRoom(room, await readBody(request));
           await this.save();
-          await this.broadcast(room);
+          this.broadcast(room);
           return json(200, { clientToken: joined.clientToken, room: publicRoom(room, joined.clientToken) });
         }
         if (request.method === 'POST' && parts[3] === 'leave') {
           const body = await readBody(request);
           this.leaveRoom(room, body.clientToken);
           await this.save();
-          if (this.rooms.has(room.id)) await this.broadcast(room);
+          if (this.rooms.has(room.id)) this.broadcast(room);
           return json(200, { ok: true });
         }
         if (request.method === 'POST' && parts[3] === 'start') {
           const body = await readBody(request);
           this.startRoom(room, body.clientToken);
           await this.save();
-          await this.broadcast(room);
+          this.broadcast(room);
           return json(200, { room: publicRoom(room, body.clientToken) });
         }
         if (request.method === 'POST' && parts[3] === 'actions') {
           const body = await readBody(request);
           const result = this.handleAction(room, body.clientToken, body);
           await this.save();
-          await this.broadcast(room);
+          this.broadcast(room);
           return json(200, { room: publicRoom(room, body.clientToken), result });
         }
       }

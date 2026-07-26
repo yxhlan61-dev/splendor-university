@@ -17,7 +17,7 @@ const PORT = Number(process.env.PORT || 5500);
 const rooms = new Map();
 const subscribers = new Map();
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
-const WAITING_DISCONNECTED_TTL_MS = 30 * 1000;
+const WAITING_DISCONNECTED_TTL_MS = 10 * 60 * 1000;
 const ABANDONED_ROOM_TTL_MS = 5 * 60 * 1000;
 const GAME_OVER_TTL_MS = 30 * 60 * 1000;
 
@@ -129,12 +129,29 @@ function touch(room) {
   room.updatedAt = new Date().toISOString();
 }
 
+function markClientSeen(room, clientToken) {
+  const client = room.clients.get(clientToken);
+  if (!client) return false;
+  client.lastSeen = Date.now();
+  return true;
+}
+
 function broadcast(room) {
   const list = subscribers.get(room.id);
-  if (!list) return;
+  if (!list?.size) return;
   for (const sub of [...list]) {
-    sub.res.write(`event: room\ndata: ${JSON.stringify(publicRoom(room, sub.clientToken))}\n\n`);
+    if (sub.closed || sub.res.destroyed || sub.res.writableEnded) {
+      list.delete(sub);
+      continue;
+    }
+    try {
+      sub.res.write(`event: room\ndata: ${JSON.stringify(publicRoom(room, sub.clientToken))}\n\n`);
+    } catch {
+      sub.closed = true;
+      list.delete(sub);
+    }
   }
+  if (list.size === 0) subscribers.delete(room.id);
 }
 
 function isBrokenRoom(room) {
@@ -359,7 +376,8 @@ function leaveRoom(room, clientToken) {
 function startRoom(room, clientToken) {
   const client = ensureClient(room, clientToken);
   if (client.clientId !== room.hostClientId) throw new Error('只有房主可以开始游戏');
-  if (room.status !== 'waiting') throw new Error('房间已经开始或结束');
+  if (room.status === 'playing' && room.game) return;
+  if (room.status !== 'waiting') throw new Error('房间已经结束');
   const missing = room.seats.filter((seat) => !seat.clientId);
   if (missing.length) throw new Error('请等待所有座位坐满后再开始');
   const firstPlayerIndex = room.firstMode === 'random' ? Math.floor(Math.random() * room.playerCount) : 0;
@@ -446,6 +464,7 @@ async function handleApi(req, res, url) {
       const room = ensureRoom(parts[2].toUpperCase());
       if (req.method === 'GET' && parts.length === 3) {
         const clientToken = url.searchParams.get('clientToken') || '';
+        markClientSeen(room, clientToken);
         json(res, 200, { room: publicRoom(room, clientToken) });
         return true;
       }
@@ -464,6 +483,7 @@ async function handleApi(req, res, url) {
         if (!subscribers.has(room.id)) subscribers.set(room.id, new Set());
         subscribers.get(room.id).add(sub);
         req.on('close', () => {
+          sub.closed = true;
           subscribers.get(room.id)?.delete(sub);
           const c = room.clients.get(clientToken);
           if (c) c.connected = false;
