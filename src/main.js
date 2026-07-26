@@ -115,7 +115,7 @@ async function refreshRooms() {
     lastError = '';
   } catch (error) {
     rooms = [];
-    lastError = `${error.message || error}。请确认已用 npm run serve 或 node server.js 启动线上房间服务器。`;
+    lastError = `${error.message || error}。如果是在本机开发预览，请用 npm run serve 或 node server.js 启动带房间 API 的服务器；线上部署页面请稍后刷新重试。`;
   } finally {
     roomsLoading = false;
     render();
@@ -425,7 +425,7 @@ function renderOnlineLobby() {
   return `
     <section class="mode-panel online-lobby">
       <h2>线上多人游玩</h2>
-      <p class="muted">需要通过 <code>npm run serve</code> 或 <code>node server.js</code> 启动带房间 API 的服务器；其他玩家访问同一地址即可查看和加入房间。</p>
+      <p class="muted">当前网页会连接线上房间服务。创建房间后，把本页面地址或房间号发给朋友；朋友选择「线上多人房间」即可看到并加入。只有本地开发预览时才需要 <code>npm run serve</code> 或 <code>node server.js</code>。</p>
       <div class="online-grid">
         <form id="createRoomForm" class="sub-card">
           <h3>创建房间</h3>
@@ -463,14 +463,21 @@ function renderOnlineLobby() {
 function renderRoomListItem(room) {
   const statusText = { waiting: '等待中', playing: '游戏中', game_over: '已结束' }[room.status] || room.status;
   const canJoin = room.status === 'waiting' && room.occupied < room.playerCount;
+  const canWatch = room.status !== 'waiting';
+  const buttonText = canJoin ? '进入房间' : (room.status === 'waiting' ? '房间已满' : '观战');
+  const buttonAttrs = canJoin || canWatch ? `data-join-room="${escapeHtml(room.id)}"` : 'disabled';
+  const hint = canJoin
+    ? '可加入空位'
+    : (room.status === 'waiting' ? '座位已满；如果是别人退出后的旧房间，请点刷新，服务器会自动释放离线空位。' : '游戏已开始，只能观战。');
   return `
     <article class="room-item">
       <div>
         <strong>${escapeHtml(room.name)}</strong>
-        <p>${escapeHtml(room.id)} · ${statusText} · ${room.occupied}/${room.playerCount} 人</p>
+        <p>${escapeHtml(room.id)} &middot; ${statusText} &middot; ${room.occupied}/${room.playerCount} 人</p>
         <p class="muted">${room.seats.map((seat) => seat.occupied ? escapeHtml(seat.name) : `空位${seat.index + 1}`).join('、')}</p>
+        <p class="muted room-hint">${escapeHtml(hint)}</p>
       </div>
-      <button data-join-room="${escapeHtml(room.id)}">${canJoin ? '进入房间' : '观战'}</button>
+      <button ${buttonAttrs}>${buttonText}</button>
     </article>
   `;
 }

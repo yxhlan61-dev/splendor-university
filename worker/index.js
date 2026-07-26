@@ -9,6 +9,7 @@
 } from '../src/game.js';
 
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
+const WAITING_DISCONNECTED_TTL_MS = 5 * 60 * 1000;
 const encoder = new TextEncoder();
 
 function randomId(prefix = '') {
@@ -110,13 +111,69 @@ export class GameLobby {
     await this.state.storage.put('rooms', Object.fromEntries(this.rooms));
   }
 
+  isBrokenRoom(room) {
+    const broken = (value) => /^\?+$/.test(String(value || '').trim());
+    return broken(room.name) || room.seats.some((seat) => broken(seat.name));
+  }
+
+  hasLiveSubscriber(roomId, clientToken) {
+    return [...(this.subscribers.get(roomId) || [])].some((sub) => sub.clientToken === clientToken);
+  }
+
+  markStaleConnection(room, client) {
+    if (client?.connected && !this.hasLiveSubscriber(room.id, client.clientId)) {
+      client.connected = false;
+      return true;
+    }
+    return false;
+  }
+
+  cleanupWaitingRoom(room, now) {
+    let changed = false;
+    for (const seat of room.seats) {
+      if (!seat.clientId) continue;
+      const client = room.clients?.[seat.clientId];
+      if (client) changed = this.markStaleConnection(room, client) || changed;
+      const inactive = !client || (!client.connected && now - (client.lastSeen || 0) > WAITING_DISCONNECTED_TTL_MS);
+      if (inactive) {
+        if (client) delete room.clients[seat.clientId];
+        seat.clientId = null;
+        seat.name = `等待玩家${seat.index + 1}`;
+        changed = true;
+      }
+    }
+    for (const [clientId, client] of Object.entries(room.clients || {})) {
+      changed = this.markStaleConnection(room, client) || changed;
+      if (client.spectator && !client.connected && now - (client.lastSeen || 0) > WAITING_DISCONNECTED_TTL_MS) {
+        delete room.clients[clientId];
+        changed = true;
+      }
+    }
+    if (!room.hostClientId || !room.clients?.[room.hostClientId]) {
+      const nextHostSeat = room.seats.find((seat) => seat.clientId);
+      room.hostClientId = nextHostSeat?.clientId || null;
+      changed = true;
+    }
+    return changed;
+  }
+
   async cleanupRooms() {
     const now = Date.now();
     let changed = false;
-    for (const [id, room] of this.rooms) {
-      if (now - Date.parse(room.updatedAt) > ROOM_TTL_MS) {
+    for (const [id, room] of [...this.rooms]) {
+      if (this.isBrokenRoom(room) || now - Date.parse(room.updatedAt) > ROOM_TTL_MS) {
         this.rooms.delete(id);
         this.closeSubscribers(id);
+        changed = true;
+        continue;
+      }
+      if (room.status === 'waiting' && this.cleanupWaitingRoom(room, now)) {
+        if (!room.hostClientId) {
+          this.rooms.delete(id);
+          this.closeSubscribers(id);
+        } else {
+          touch(room);
+        }
         changed = true;
       }
     }
@@ -185,7 +242,7 @@ export class GameLobby {
           playerIndex: 0,
           playerName: hostName,
           spectator: false,
-          connected: true,
+          connected: false,
           lastSeen: Date.now(),
         },
       },
@@ -204,9 +261,9 @@ export class GameLobby {
     if (emptySeat) {
       emptySeat.clientId = clientId;
       emptySeat.name = name;
-      client = { clientId, playerIndex: emptySeat.index, playerName: name, spectator: false, connected: true, lastSeen: Date.now() };
+      client = { clientId, playerIndex: emptySeat.index, playerName: name, spectator: false, connected: false, lastSeen: Date.now() };
     } else {
-      client = { clientId, playerIndex: null, playerName: name, spectator: true, connected: true, lastSeen: Date.now() };
+      client = { clientId, playerIndex: null, playerName: name, spectator: true, connected: false, lastSeen: Date.now() };
     }
     room.clients[clientId] = client;
     touch(room);
