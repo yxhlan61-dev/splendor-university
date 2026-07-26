@@ -193,7 +193,7 @@ async function joinOnlineRoom(roomId, playerName = '') {
     lastError = '';
     const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
       method: 'POST',
-      body: JSON.stringify({ playerName: name }),
+      body: JSON.stringify({ playerName: name, clientToken: online?.roomId === roomId ? online.clientToken : undefined }),
     });
     online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, lastFlashId: null };
     game = data.room.game || null;

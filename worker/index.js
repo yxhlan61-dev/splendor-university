@@ -9,7 +9,7 @@ import {
 } from '../src/game.js';
 
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
-const WAITING_DISCONNECTED_TTL_MS = 90 * 1000;
+const WAITING_DISCONNECTED_TTL_MS = 30 * 1000;
 const ABANDONED_ROOM_TTL_MS = 5 * 60 * 1000;
 const GAME_OVER_TTL_MS = 30 * 60 * 1000;
 const encoder = new TextEncoder();
@@ -83,7 +83,12 @@ function roomListItem(room) {
     status: room.status,
     playerCount: room.playerCount,
     occupied,
-    seats: room.seats.map((seat) => ({ index: seat.index, name: seat.name, occupied: Boolean(seat.clientId) })),
+    seats: room.seats.map((seat) => ({
+      index: seat.index,
+      name: seat.name,
+      occupied: Boolean(seat.clientId),
+      connected: Boolean(seat.clientId && room.clients?.[seat.clientId]?.connected),
+    })),
     createdAt: room.createdAt,
     updatedAt: room.updatedAt,
   };
@@ -149,6 +154,11 @@ export class GameLobby {
 
   isAbandoned(room, now) {
     return !this.hasConnectedSeat(room) && now - this.latestClientLastSeen(room) > ABANDONED_ROOM_TTL_MS;
+  }
+
+  canReplaceSeat(room, seat, now) {
+    const client = seat.clientId ? room.clients?.[seat.clientId] : null;
+    return !client || (!client.connected && now - (client.lastSeen || 0) > WAITING_DISCONNECTED_TTL_MS);
   }
 
   deleteRoom(roomId) {
@@ -287,9 +297,21 @@ export class GameLobby {
   }
 
   joinRoom(room, body) {
-    const name = sanitizeName(body.playerName, '线上玩家');
+    const name = sanitizeName(body.playerName, '????');
+    const requestedToken = body.clientToken || '';
+    if (requestedToken && room.clients?.[requestedToken]) {
+      const existing = room.clients[requestedToken];
+      existing.playerName = name || existing.playerName;
+      existing.lastSeen = Date.now();
+      touch(room);
+      return { room, clientToken: requestedToken };
+    }
+    this.markAllStaleConnections(room);
+    const now = Date.now();
+    const reusableSeat = room.status === 'waiting' ? room.seats.find((seat) => seat.clientId && this.canReplaceSeat(room, seat, now)) : null;
+    if (reusableSeat?.clientId) delete room.clients[reusableSeat.clientId];
+    const emptySeat = room.status === 'waiting' ? (reusableSeat || room.seats.find((seat) => !seat.clientId)) : null;
     const clientId = randomId('C');
-    const emptySeat = room.status === 'waiting' ? room.seats.find((seat) => !seat.clientId) : null;
     let client;
     if (emptySeat) {
       emptySeat.clientId = clientId;
