@@ -57,3 +57,20 @@ npm run deploy
 ```
 
 部署后，静态页面由 Workers Assets 托管，线上房间 API 由 Worker + Durable Object 托管。这样线上房间不依赖本地 `server.js` 进程，适合公开网页多人游玩。
+
+## GitHub Actions 自动部署
+
+已添加 `.github/workflows/deploy.yml`。当 `main` 分支收到新的 push，或在 GitHub Actions 页面手动点击 `Run workflow` 时，会自动：
+
+1. 检出代码。
+2. 使用 Node.js 22。
+3. 运行规则测试 `npm test`。
+4. 构建静态资源 `npm run build`。
+5. 使用 Wrangler 部署到 Cloudflare Workers。
+
+需要在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 中添加：
+
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+
+API Token 需要允许部署 Workers、读取/写入 Workers Scripts，并能访问 Durable Objects 相关配置。
