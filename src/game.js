@@ -196,7 +196,7 @@ export function takeSame(game, type) {
   const player = getCurrentPlayer(game);
   game.supply[type] -= 2;
   player.tokens[type] += 2;
-  log(game, `${player.name} \u5f03\u8fd8 1 \u5f20${TASK_INFO[type].name}\u3002`);
+  log(game, `${player.name} 拿取 2 张${TASK_INFO[type].name}。`);
   finishMainAction(game);
 }
 
@@ -425,7 +425,7 @@ export function discardToken(game, type) {
   if ((player.tokens[type] || 0) <= 0) throw new Error(`\u6ca1\u6709${TASK_INFO[type].name}\u53ef\u5f03\u8fd8`);
   player.tokens[type] -= 1;
   game.supply[type] += 1;
-  log(game, `${player.name} \u5f03\u8fd8 1 \u5f20${TASK_INFO[type].name}\u3002`);
+  log(game, `${player.name} 弃还 1 张${TASK_INFO[type].name}。`);
   if (totalTokens(player.tokens) <= TOKEN_LIMIT) {
     game.pendingDiscardPlayerIndex = null;
     if (enterDiscardPhaseIfNeeded(game)) return;

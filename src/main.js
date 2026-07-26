@@ -20,11 +20,35 @@ let lastError = '';
 let opportunityAnimation = null;
 let gameOverDismissed = false;
 let rulesOpen = false;
+let setupMode = 'menu';
+let rooms = [];
+let roomsLoading = false;
+let online = loadOnlineSession();
 
 const app = document.querySelector('#app');
 
+function isOnline() {
+  return Boolean(online?.room);
+}
+
+function onlineViewer() {
+  return online?.room?.viewer || null;
+}
+
+function isOnlinePlayer() {
+  return isOnline() && onlineViewer() && !onlineViewer().spectator && onlineViewer().playerIndex !== null;
+}
+
+function isOnlineActionTurn() {
+  if (!isOnlinePlayer() || !game) return false;
+  const viewer = onlineViewer();
+  if (game.phase === 'player_action') return game.currentPlayerIndex === viewer.playerIndex;
+  if (game.phase === 'discard_tokens') return game.pendingDiscardPlayerIndex === viewer.playerIndex;
+  return false;
+}
+
 function save() {
-  if (game) localStorage.setItem('universitySplendorGame', JSON.stringify(game));
+  if (game && !isOnline()) localStorage.setItem('universitySplendorGame', JSON.stringify(game));
 }
 
 function load() {
@@ -38,7 +62,202 @@ function load() {
   }
 }
 
-function runAction(fn) {
+function loadOnlineSession() {
+  const raw = localStorage.getItem('universitySplendorOnlineSession');
+  if (!raw) return null;
+  try {
+    const saved = JSON.parse(raw);
+    if (!saved?.roomId || !saved?.clientToken) return null;
+    return { ...saved, room: null, connected: false, eventSource: null, lastFlashId: null };
+  } catch {
+    return null;
+  }
+}
+
+function saveOnlineSession() {
+  if (!online?.roomId || !online?.clientToken) return;
+  localStorage.setItem('universitySplendorOnlineSession', JSON.stringify({ roomId: online.roomId, clientToken: online.clientToken }));
+}
+
+function clearOnlineSession() {
+  online?.eventSource?.close?.();
+  online = null;
+  localStorage.removeItem('universitySplendorOnlineSession');
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `请求失败：${response.status}`);
+  return data;
+}
+
+function applyOnlineRoom(room) {
+  if (!online) return;
+  online.room = room;
+  online.connected = true;
+  game = room.game || null;
+  if (room.flash?.type === 'opportunity' && room.flash.id !== online.lastFlashId) {
+    online.lastFlashId = room.flash.id;
+    if (room.flash.card && room.flash.message) showOpportunityAnimation(room.flash.card, room.flash.message);
+  }
+}
+
+async function refreshRooms() {
+  roomsLoading = true;
+  render();
+  try {
+    const data = await api('/api/rooms');
+    rooms = data.rooms || [];
+    lastError = '';
+  } catch (error) {
+    rooms = [];
+    lastError = `${error.message || error}。请确认已用 npm run serve 或 node server.js 启动线上房间服务器。`;
+  } finally {
+    roomsLoading = false;
+    render();
+  }
+}
+
+async function reconnectOnlineSession() {
+  if (!online?.roomId || !online?.clientToken) return;
+  try {
+    const data = await api(`/api/rooms/${encodeURIComponent(online.roomId)}?clientToken=${encodeURIComponent(online.clientToken)}`);
+    applyOnlineRoom(data.room);
+    connectRoomEvents();
+  } catch (error) {
+    lastError = `无法恢复线上房间：${error.message || error}`;
+    clearOnlineSession();
+    game = null;
+  }
+  render();
+}
+
+function connectRoomEvents() {
+  if (!online?.roomId || !online?.clientToken || online.eventSource) return;
+  const source = new EventSource(`/api/rooms/${encodeURIComponent(online.roomId)}/events?clientToken=${encodeURIComponent(online.clientToken)}`);
+  online.eventSource = source;
+  source.onopen = () => {
+    if (!online) return;
+    online.connected = true;
+    if (lastError === '线上连接已断开，浏览器正在尝试重连。') lastError = '';
+  };
+  source.addEventListener('room', (event) => {
+    applyOnlineRoom(JSON.parse(event.data));
+    selectedDifferent.clear();
+    render();
+  });
+  source.onerror = () => {
+    if (!online) return;
+    online.connected = false;
+    lastError = '线上连接已断开，浏览器正在尝试重连。';
+    render();
+  };
+}
+
+async function createOnlineRoom(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  try {
+    lastError = '';
+    const data = await api('/api/rooms', {
+      method: 'POST',
+      body: JSON.stringify({
+        roomName: form.get('roomName'),
+        playerName: form.get('playerName'),
+        playerCount: Number(form.get('playerCount')),
+        firstMode: form.get('firstMode'),
+      }),
+    });
+    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, lastFlashId: null };
+    game = data.room.game || null;
+    saveOnlineSession();
+    connectRoomEvents();
+  } catch (error) {
+    lastError = error.message || String(error);
+  }
+  render();
+}
+
+async function joinOnlineRoom(roomId, playerName = '') {
+  const name = playerName || prompt('请输入你的玩家名称：', '线上玩家');
+  if (name === null) return;
+  try {
+    lastError = '';
+    const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
+      method: 'POST',
+      body: JSON.stringify({ playerName: name }),
+    });
+    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, lastFlashId: null };
+    game = data.room.game || null;
+    saveOnlineSession();
+    connectRoomEvents();
+  } catch (error) {
+    lastError = error.message || String(error);
+  }
+  render();
+}
+
+async function startOnlineRoom() {
+  try {
+    lastError = '';
+    const data = await api(`/api/rooms/${encodeURIComponent(online.roomId)}/start`, {
+      method: 'POST',
+      body: JSON.stringify({ clientToken: online.clientToken }),
+    });
+    applyOnlineRoom(data.room);
+  } catch (error) {
+    lastError = error.message || String(error);
+  }
+  render();
+}
+
+async function sendOnlineAction(type, payload = {}) {
+  try {
+    lastError = '';
+    const data = await api(`/api/rooms/${encodeURIComponent(online.roomId)}/actions`, {
+      method: 'POST',
+      body: JSON.stringify({ clientToken: online.clientToken, type, payload }),
+    });
+    selectedDifferent.clear();
+    applyOnlineRoom(data.room);
+  } catch (error) {
+    lastError = error.message || String(error);
+  }
+  render();
+}
+
+function leaveOnlineRoom() {
+  if (!confirm('确定要退出当前线上房间吗？')) return;
+  const roomId = online?.roomId;
+  const clientToken = online?.clientToken;
+  if (roomId && clientToken) {
+    api(`/api/rooms/${encodeURIComponent(roomId)}/leave`, {
+      method: 'POST',
+      body: JSON.stringify({ clientToken }),
+    }).catch(() => {});
+  }
+  clearOnlineSession();
+  game = null;
+  selectedDifferent.clear();
+  setupMode = 'online';
+  refreshRooms();
+  render();
+}
+
+function runAction(fn, onlineAction) {
+  if (isOnline()) {
+    if (!onlineAction) {
+      lastError = '该动作暂不支持线上模式。';
+      render();
+      return;
+    }
+    sendOnlineAction(onlineAction.type, onlineAction.payload);
+    return;
+  }
   try {
     lastError = '';
     fn();
@@ -67,6 +286,10 @@ function startGame(event) {
 }
 
 function resetGame() {
+  if (isOnline()) {
+    leaveOnlineRoom();
+    return;
+  }
   if (!confirm('确定要重新开始并清除当前进度吗？')) return;
   game = null;
   opportunityAnimation = null;
@@ -78,11 +301,24 @@ function resetGame() {
 }
 
 function render() {
+  if (isOnline() && !online.room) {
+    renderSetup();
+    return;
+  }
+  if (isOnline() && online.room.status === 'waiting') {
+    game = null;
+    renderOnlineRoom();
+    return;
+  }
   if (!game) {
     renderSetup();
     return;
   }
   const current = getCurrentPlayer(game);
+  const viewer = onlineViewer();
+  const modeText = isOnline()
+    ? `线上房间 ${escapeHtml(online.room.name)}（${escapeHtml(online.room.id)}）${viewer?.spectator ? ' · 观战中' : ` · 你是 ${escapeHtml(viewer?.playerName || '')}`}`
+    : `本地多人 ${GAME_VERSION}`;
   app.innerHTML = `
     ${renderRulesModal()}
     ${renderGameOver()}
@@ -90,15 +326,16 @@ function render() {
     <header class="hero">
       <div>
         <h1>璀璨宝石之大学模拟器</h1>
-        <p>本地多人 ${GAME_VERSION} · 每回合四选一 · 15 开心值触发终局</p>
+        <p>${modeText} · 每回合四选一 · 15 开心值触发终局</p>
       </div>
       <div class="header-actions">
-        <button id="rulesBtn">\u89c4\u5219\u4ecb\u7ecd</button>
-        <button id="saveBtn">保存进度</button>
-        <button class="danger" id="resetBtn">重新开始</button>
+        ${isOnline() ? `<button id="copyRoomBtn">复制房间号</button>` : ''}
+        <button id="rulesBtn">规则介绍</button>
+        ${isOnline() ? `<button class="danger" id="leaveOnlineBtn">退出房间</button>` : '<button id="saveBtn">保存进度</button><button class="danger" id="resetBtn">重新开始</button>'}
       </div>
     </header>
 
+    ${renderOnlineNotice()}
     ${lastError ? `<div class="toast error">${escapeHtml(lastError)}</div>` : ''}
 
     <main class="dashboard">
@@ -137,60 +374,191 @@ function renderSetup() {
   app.innerHTML = `
     ${renderRulesModal()}
     <div class="setup-top-actions">
-      <button id="rulesBtn">\u89c4\u5219\u4ecb\u7ecd</button>
+      <button id="rulesBtn">规则介绍</button>
     </div>
     <main class="setup">
-      <div class="setup-card">
+      <div class="setup-card setup-card-wide">
         <h1>璀璨宝石之大学模拟器</h1>
-        <p>第一版程序：本地 2-4 人轮流游玩。</p>
-        ${saved ? '<button id="continueBtn" class="primary wide">继续上次进度</button>' : ''}
-        <form id="setupForm">
-          <label>玩家人数
-            <select name="playerCount" id="playerCount">
+        <p>请选择游玩模式：本地多人轮流共用一台设备，或线上多人通过房间同步游玩。</p>
+        <div class="mode-switch">
+          <button class="${setupMode === 'local' || setupMode === 'menu' ? 'primary' : ''}" data-mode="local">本地多人轮流</button>
+          <button class="${setupMode === 'online' ? 'primary' : ''}" data-mode="online">线上多人房间</button>
+        </div>
+        ${setupMode === 'online' ? renderOnlineLobby() : renderLocalSetup(saved)}
+      </div>
+    </main>
+  `;
+  bindSetupEvents(saved);
+}
+
+function renderLocalSetup(saved) {
+  return `
+    <section class="mode-panel">
+      <h2>本地多人轮流游玩</h2>
+      <p class="muted">所有玩家共用当前浏览器，按回合轮流操作；可保存到浏览器本地存储。</p>
+      ${saved ? '<button id="continueBtn" class="primary wide">继续上次本地进度</button>' : ''}
+      <form id="setupForm">
+        <label>玩家人数
+          <select name="playerCount" id="playerCount">
+            <option value="2">2 人</option>
+            <option value="3">3 人</option>
+            <option value="4">4 人</option>
+          </select>
+        </label>
+        <div id="nameFields"></div>
+        <label>先手规则
+          <select name="firstMode" id="firstMode">
+            <option value="manual">手动指定</option>
+            <option value="random">随机</option>
+          </select>
+        </label>
+        <label id="firstPlayerWrap">先手玩家
+          <select name="firstPlayerIndex" id="firstPlayerIndex"></select>
+        </label>
+        <button class="primary wide" type="submit">开始本地新游戏</button>
+      </form>
+    </section>
+  `;
+}
+
+function renderOnlineLobby() {
+  return `
+    <section class="mode-panel online-lobby">
+      <h2>线上多人游玩</h2>
+      <p class="muted">需要通过 <code>npm run serve</code> 或 <code>node server.js</code> 启动带房间 API 的服务器；其他玩家访问同一地址即可查看和加入房间。</p>
+      <div class="online-grid">
+        <form id="createRoomForm" class="sub-card">
+          <h3>创建房间</h3>
+          <label>房间名称 <input name="roomName" maxlength="24" value="我的房间" /></label>
+          <label>你的名称 <input name="playerName" maxlength="18" value="玩家1" /></label>
+          <label>房间人数
+            <select name="playerCount">
               <option value="2">2 人</option>
               <option value="3">3 人</option>
               <option value="4">4 人</option>
             </select>
           </label>
-          <div id="nameFields"></div>
           <label>先手规则
-            <select name="firstMode" id="firstMode">
-              <option value="manual">手动指定</option>
-              <option value="random">随机</option>
+            <select name="firstMode">
+              <option value="host">房主先手</option>
+              <option value="random">随机先手</option>
             </select>
           </label>
-          <label id="firstPlayerWrap">先手玩家
-            <select name="firstPlayerIndex" id="firstPlayerIndex"></select>
-          </label>
-          <button class="primary wide" type="submit">开始新游戏</button>
+          <button class="primary wide" type="submit">创建线上房间</button>
         </form>
+        <div class="sub-card">
+          <div class="room-list-title">
+            <h3>已有房间</h3>
+            <button id="refreshRoomsBtn" type="button">${roomsLoading ? '刷新中...' : '刷新'}</button>
+          </div>
+          <div class="rooms">
+            ${rooms.length ? rooms.map(renderRoomListItem).join('') : `<p class="muted">暂无房间。点击刷新，或自己创建一个房间。</p>`}
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderRoomListItem(room) {
+  const statusText = { waiting: '等待中', playing: '游戏中', game_over: '已结束' }[room.status] || room.status;
+  const canJoin = room.status === 'waiting' && room.occupied < room.playerCount;
+  return `
+    <article class="room-item">
+      <div>
+        <strong>${escapeHtml(room.name)}</strong>
+        <p>${escapeHtml(room.id)} · ${statusText} · ${room.occupied}/${room.playerCount} 人</p>
+        <p class="muted">${room.seats.map((seat) => seat.occupied ? escapeHtml(seat.name) : `空位${seat.index + 1}`).join('、')}</p>
+      </div>
+      <button data-join-room="${escapeHtml(room.id)}">${canJoin ? '进入房间' : '观战'}</button>
+    </article>
+  `;
+}
+
+function bindSetupEvents(saved) {
+  bindRulesEvents();
+  document.querySelectorAll('[data-mode]').forEach((btn) => btn.addEventListener('click', () => {
+    setupMode = btn.dataset.mode;
+    if (setupMode === 'online') refreshRooms();
+    else render();
+  }));
+  document.querySelector('#createRoomForm')?.addEventListener('submit', createOnlineRoom);
+  document.querySelector('#refreshRoomsBtn')?.addEventListener('click', refreshRooms);
+  document.querySelectorAll('[data-join-room]').forEach((btn) => btn.addEventListener('click', () => joinOnlineRoom(btn.dataset.joinRoom)));
+
+  const playerCount = document.querySelector('#playerCount');
+  const firstMode = document.querySelector('#firstMode');
+  if (playerCount && firstMode) {
+    const updateFields = () => {
+      const count = Number(playerCount.value);
+      document.querySelector('#nameFields').innerHTML = Array.from({ length: count }, (_, i) => `
+        <label>玩家 ${i + 1} 名称 <input name="p${i + 1}" value="玩家${i + 1}" /></label>
+      `).join('');
+      document.querySelector('#firstPlayerIndex').innerHTML = Array.from({ length: count }, (_, i) => `<option value="${i}">玩家${i + 1}</option>`).join('');
+    };
+    const updateFirst = () => {
+      document.querySelector('#firstPlayerWrap').style.display = firstMode.value === 'random' ? 'none' : 'grid';
+    };
+    playerCount.addEventListener('change', updateFields);
+    firstMode.addEventListener('change', updateFirst);
+    document.querySelector('#setupForm')?.addEventListener('submit', startGame);
+    document.querySelector('#continueBtn')?.addEventListener('click', () => {
+      game = saved;
+      opportunityAnimation = null;
+      gameOverDismissed = false;
+      render();
+    });
+    updateFields();
+    updateFirst();
+  }
+}
+
+function renderOnlineRoom() {
+  const room = online.room;
+  const viewer = onlineViewer();
+  const canStart = viewer?.isHost && room.seats.every((seat) => seat.occupied);
+  app.innerHTML = `
+    ${renderRulesModal()}
+    <header class="hero">
+      <div>
+        <h1>${escapeHtml(room.name)}</h1>
+        <p>线上房间 ${escapeHtml(room.id)} · 等待玩家加入 · ${room.seats.filter((s) => s.occupied).length}/${room.playerCount} 人</p>
+      </div>
+      <div class="header-actions">
+        <button id="copyRoomBtn">复制房间号</button>
+        <button id="rulesBtn">规则介绍</button>
+        <button class="danger" id="leaveOnlineBtn">退出房间</button>
+      </div>
+    </header>
+    ${lastError ? `<div class="toast error">${escapeHtml(lastError)}</div>` : ''}
+    <main class="setup">
+      <div class="setup-card setup-card-wide">
+        <h2>房间等待区</h2>
+        <p class="muted">把当前页面地址或房间号 ${escapeHtml(room.id)} 发给其他玩家。所有座位坐满后，房主可以开始游戏。</p>
+        <div class="seat-grid">
+          ${room.seats.map((seat) => `
+            <article class="seat-card ${seat.occupied ? 'occupied' : ''}">
+              <h3>座位 ${seat.index + 1}${seat.isHost ? ' · 房主' : ''}</h3>
+              <p>${seat.occupied ? escapeHtml(seat.name) : '等待加入'}</p>
+              <small>${seat.connected ? '在线' : seat.occupied ? '暂离' : '空位'}</small>
+            </article>
+          `).join('')}
+        </div>
+        <button id="startOnlineBtn" class="primary wide" ${canStart ? '' : 'disabled'}>${viewer?.isHost ? '开始线上游戏' : '等待房主开始'}</button>
       </div>
     </main>
   `;
-  const playerCount = document.querySelector('#playerCount');
-  const firstMode = document.querySelector('#firstMode');
-  const updateFields = () => {
-    const count = Number(playerCount.value);
-    document.querySelector('#nameFields').innerHTML = Array.from({ length: count }, (_, i) => `
-      <label>玩家 ${i + 1} 名称 <input name="p${i + 1}" value="玩家${i + 1}" /></label>
-    `).join('');
-    document.querySelector('#firstPlayerIndex').innerHTML = Array.from({ length: count }, (_, i) => `<option value="${i}">玩家${i + 1}</option>`).join('');
-  };
-  const updateFirst = () => {
-    document.querySelector('#firstPlayerWrap').style.display = firstMode.value === 'random' ? 'none' : 'grid';
-  };
-  playerCount.addEventListener('change', updateFields);
-  firstMode.addEventListener('change', updateFirst);
-  document.querySelector('#setupForm').addEventListener('submit', startGame);
-  bindRulesEvents();
-  document.querySelector('#continueBtn')?.addEventListener('click', () => {
-    game = saved;
-    opportunityAnimation = null;
-    gameOverDismissed = false;
-    render();
-  });
-  updateFields();
-  updateFirst();
+  bindEvents();
+}
+
+function renderOnlineNotice() {
+  if (!isOnline()) return '';
+  const viewer = onlineViewer();
+  const turn = isOnlineActionTurn();
+  const text = viewer?.spectator
+    ? '你正在观战，不能执行游戏动作。'
+    : turn ? '轮到你操作。' : '请等待其他玩家操作。';
+  return `<div class="online-notice ${turn ? 'your-turn' : ''}">${escapeHtml(text)} ${online.connected ? '已连接' : '连接中断，自动重连中'}。</div>`;
 }
 
 function showOpportunityAnimation(card, message) {
@@ -226,11 +594,13 @@ function renderOpportunityAnimation() {
 }
 
 function renderPlayers() {
+  const viewer = onlineViewer();
   return `<section class="players">${game.players.map((player, index) => {
     const permanent = getPermanentCounts(player);
+    const badges = `${index === game.currentPlayerIndex ? '<span>当前</span>' : ''}${viewer?.playerIndex === index ? '<span>你</span>' : ''}`;
     return `
-      <article class="panel player ${index === game.currentPlayerIndex ? 'active' : ''}">
-        <h2>${escapeHtml(player.name)} ${index === game.currentPlayerIndex ? '<span>当前</span>' : ''}</h2>
+      <article class="panel player ${index === game.currentPlayerIndex ? 'active' : ''} ${viewer?.playerIndex === index ? 'me' : ''}">
+        <h2>${escapeHtml(player.name)} ${badges}</h2>
         <p class="score">开心值 ${player.happiness}</p>
         <p>资源 ${totalTokens(player.tokens)}/${TOKEN_LIMIT}</p>
         <div class="tokens small">${TOKEN_TYPES.map((t) => tokenBadge(t, player.tokens[t], true)).join('')}</div>
@@ -244,13 +614,24 @@ function renderPlayers() {
 
 function renderPhaseControls() {
   if (game.phase === 'game_over') return '';
+  const canInteract = !isOnline() || isOnlineActionTurn();
+  if (isOnline() && !canInteract) {
+    const current = game.phase === 'discard_tokens' ? game.players[game.pendingDiscardPlayerIndex] : getCurrentPlayer(game);
+    return `
+      <section class="panel action-panel">
+        <h2>等待操作</h2>
+        <p>当前阶段：${phaseText(game.phase)}。</p>
+        <p>请等待 ${escapeHtml(current.name)} 完成操作。</p>
+      </section>
+    `;
+  }
   if (game.phase === 'discard_tokens') {
     const player = game.players[game.pendingDiscardPlayerIndex];
     return `
       <section class="panel action-panel highlight">
         <h2>强制弃还资源</h2>
         <p>${escapeHtml(player.name)} 当前资源 ${totalTokens(player.tokens)}/${TOKEN_LIMIT}，请弃还到 ${TOKEN_LIMIT} 张。</p>
-        <div class="button-row">${TOKEN_TYPES.map((type) => `<button ${player.tokens[type] <= 0 ? 'disabled' : ''} data-discard="${type}">弃还${TASK_INFO[type].name}</button>`).join('')}</div>
+        <div class="button-row">${TOKEN_TYPES.map((type) => `<button ${player.tokens[type] <= 0 || !canInteract ? 'disabled' : ''} data-discard="${type}">弃还${TASK_INFO[type].name}</button>`).join('')}</div>
       </section>
     `;
   }
@@ -263,21 +644,22 @@ function renderPhaseControls() {
       <h2>主动作</h2>
       <div class="action-block">
         <h3>拿 3 不同</h3>
-        <div class="button-row">${TASK_TYPES.map((type) => `<button class="select-token ${selectedDifferent.has(type) ? 'selected' : ''}" ${game.supply[type] <= 0 ? 'disabled' : ''} data-toggle-different="${type}">${TASK_INFO[type].name}</button>`).join('')}</div>
-        <button class="primary" data-action="takeDifferent">拿所选</button>
+        <div class="button-row">${TASK_TYPES.map((type) => `<button class="select-token ${selectedDifferent.has(type) ? 'selected' : ''}" ${game.supply[type] <= 0 || !canInteract ? 'disabled' : ''} data-toggle-different="${type}">${TASK_INFO[type].name}</button>`).join('')}</div>
+        <button class="primary" ${!canInteract ? 'disabled' : ''} data-action="takeDifferent">拿所选</button>
       </div>
       <div class="action-block">
         <h3>拿 2 相同</h3>
-        <div class="button-row">${TASK_TYPES.map((type) => `<button ${game.supply[type] < 4 ? 'disabled' : ''} data-take-same="${type}">2${TASK_INFO[type].name}</button>`).join('')}</div>
+        <div class="button-row">${TASK_TYPES.map((type) => `<button ${game.supply[type] < 4 || !canInteract ? 'disabled' : ''} data-take-same="${type}">2${TASK_INFO[type].name}</button>`).join('')}</div>
       </div>
       <div class="action-block">
         <h3>盲预留</h3>
-        <button ${reserveFull || !hasLevel1Reservable ? 'disabled' : ''} data-blind-reserve="1">盲预留一级牌</button>
-        <button ${reserveFull || !hasLevel2Reservable ? 'disabled' : ''} data-blind-reserve="2">盲预留二级牌</button>
+        <button ${reserveFull || !hasLevel1Reservable || !canInteract ? 'disabled' : ''} data-blind-reserve="1">盲预留一级牌</button>
+        <button ${reserveFull || !hasLevel2Reservable || !canInteract ? 'disabled' : ''} data-blind-reserve="2">盲预留二级牌</button>
       </div>
     </section>
   `;
 }
+
 
 function renderMarket() {
   return `
@@ -310,21 +692,23 @@ function renderReserved() {
 
 function renderCard(card, { source, level } = {}) {
   const player = game ? getCurrentPlayer(game) : null;
-  const purchasable = player && game.phase === 'player_action' && canBuyCard(player, card);
+  const canInteract = !isOnline() || isOnlineActionTurn();
+  const affordable = player && game.phase === 'player_action' && canBuyCard(player, card);
+  const purchasable = affordable && canInteract;
   const options = player ? getPaymentOptions(player, card) : [];
   const attr = card.attribute ? TASK_INFO[card.attribute].name : '无属性';
   const attrKey = card.attribute || 'none';
   const reservable = Boolean(card.attribute);
-  const reserveDisabled = game.phase !== 'player_action' || getCurrentPlayer(game).reservedCards.length >= RESERVE_LIMIT || !reservable;
+  const reserveDisabled = game.phase !== 'player_action' || getCurrentPlayer(game).reservedCards.length >= RESERVE_LIMIT || !reservable || !canInteract;
   return `
-    <article class="card level-${card.level} attr-${attrKey} ${purchasable ? 'can-buy' : ''}">
+    <article class="card level-${card.level} attr-${attrKey} ${affordable ? 'can-buy' : ''}">
       <div class="card-top">
         <strong>${escapeHtml(card.name)}</strong>
         <span>+${card.happiness || 0}</span>
       </div>
       <p>等级 ${card.level} · 属性：${attributeBadge(card.attribute, attr)}</p>
       <p class="cost-line">成本：${renderCostBadges(card)}</p>
-      <p class="muted">${purchasable ? options[0]?.label || '可赢取' : '当前不可赢取'}</p>
+      <p class="muted">${affordable ? options[0]?.label || '可赢取' : '当前不可赢取'}</p>
       <div class="card-actions">
         <button ${!purchasable ? 'disabled' : ''} data-buy="${card.instanceId}">赢取</button>
         ${source === 'market' ? `<button ${reserveDisabled ? 'disabled' : ''} title="${reservable ? '预留该发展卡' : '无属性发展卡不能预留'}" data-reserve="${card.instanceId}" data-level="${level}">${reservable ? '预留' : '不可预留'}</button>` : ''}
@@ -332,7 +716,6 @@ function renderCard(card, { source, level } = {}) {
     </article>
   `;
 }
-
 function attributeBadge(type, label) {
   const key = type || 'none';
   return `<span class="cost-badge attr-chip cost-${key}">${escapeHtml(label)}</span>`;
@@ -478,6 +861,14 @@ function bindEvents() {
     render();
   });
   document.querySelector('#resetBtn')?.addEventListener('click', resetGame);
+  document.querySelector('#leaveOnlineBtn')?.addEventListener('click', leaveOnlineRoom);
+  document.querySelector('#startOnlineBtn')?.addEventListener('click', startOnlineRoom);
+  document.querySelector('#copyRoomBtn')?.addEventListener('click', async () => {
+    const text = `${location.origin}${location.pathname} 房间号：${online?.room?.id || online?.roomId || ''}`;
+    await navigator.clipboard?.writeText(text).catch(() => {});
+    lastError = '已复制房间信息。';
+    render();
+  });
   document.querySelector('#gameOverResetBtn')?.addEventListener('click', resetGame);
   document.querySelector('#gameOverCloseBtn')?.addEventListener('click', () => {
     gameOverDismissed = true;
@@ -489,18 +880,37 @@ function bindEvents() {
     else selectedDifferent.add(type);
     render();
   }));
-  document.querySelector('[data-action="takeDifferent"]')?.addEventListener('click', () => runAction(() => takeDifferent(game, [...selectedDifferent])));
-  document.querySelectorAll('[data-take-same]').forEach((btn) => btn.addEventListener('click', () => runAction(() => takeSame(game, btn.dataset.takeSame))));
-  document.querySelectorAll('[data-reserve]').forEach((btn) => btn.addEventListener('click', () => runAction(() => reserveMarketCard(game, Number(btn.dataset.level), btn.dataset.reserve))));
-  document.querySelectorAll('[data-blind-reserve]').forEach((btn) => btn.addEventListener('click', () => runAction(() => reserveBlindCard(game, Number(btn.dataset.blindReserve)))));
-  document.querySelectorAll('[data-buy]').forEach((btn) => btn.addEventListener('click', () => runAction(() => {
-    const purchase = buyCard(game, btn.dataset.buy, 0);
-    const draw = purchase?.opportunity;
-    const message = draw?.result?.message || '';
-    if (draw?.card && message) showOpportunityAnimation(draw.card, message);
-  })));
-  document.querySelectorAll('[data-discard]').forEach((btn) => btn.addEventListener('click', () => runAction(() => discardToken(game, btn.dataset.discard))));
+  document.querySelector('[data-action="takeDifferent"]')?.addEventListener('click', () => runAction(
+    () => takeDifferent(game, [...selectedDifferent]),
+    { type: 'takeDifferent', payload: { types: [...selectedDifferent] } },
+  ));
+  document.querySelectorAll('[data-take-same]').forEach((btn) => btn.addEventListener('click', () => runAction(
+    () => takeSame(game, btn.dataset.takeSame),
+    { type: 'takeSame', payload: { tokenType: btn.dataset.takeSame } },
+  )));
+  document.querySelectorAll('[data-reserve]').forEach((btn) => btn.addEventListener('click', () => runAction(
+    () => reserveMarketCard(game, Number(btn.dataset.level), btn.dataset.reserve),
+    { type: 'reserveMarket', payload: { level: Number(btn.dataset.level), instanceId: btn.dataset.reserve } },
+  )));
+  document.querySelectorAll('[data-blind-reserve]').forEach((btn) => btn.addEventListener('click', () => runAction(
+    () => reserveBlindCard(game, Number(btn.dataset.blindReserve)),
+    { type: 'reserveBlind', payload: { level: Number(btn.dataset.blindReserve) } },
+  )));
+  document.querySelectorAll('[data-buy]').forEach((btn) => btn.addEventListener('click', () => runAction(
+    () => {
+      const purchase = buyCard(game, btn.dataset.buy, 0);
+      const draw = purchase?.opportunity;
+      const message = draw?.result?.message || '';
+      if (draw?.card && message) showOpportunityAnimation(draw.card, message);
+    },
+    { type: 'buyCard', payload: { instanceId: btn.dataset.buy, optionIndex: 0 } },
+  )));
+  document.querySelectorAll('[data-discard]').forEach((btn) => btn.addEventListener('click', () => runAction(
+    () => discardToken(game, btn.dataset.discard),
+    { type: 'discardToken', payload: { tokenType: btn.dataset.discard } },
+  )));
 }
+
 
 function tokenBadge(type, count, small) {
   return `<span class="token ${small ? 'small' : ''}" style="--token-color:${TASK_INFO[type].color}" title="${TASK_INFO[type].name}">${TASK_INFO[type].short}<b>${count || 0}</b></span>`;
@@ -519,4 +929,5 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[ch]));
 }
 
-render();
+if (online?.roomId) reconnectOnlineSession();
+else render();

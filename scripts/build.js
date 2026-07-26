@@ -7,12 +7,12 @@ const dist = path.join(root, 'dist');
 fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(dist, { recursive: true });
 
-for (const item of ['index.html', 'src']) {
+for (const item of ['index.html', 'src', 'server.js', 'package.json']) {
   const source = path.join(root, item);
   const target = path.join(dist, item);
 
   if (!fs.existsSync(source)) {
-    throw new Error(`Required static asset is missing: ${item}`);
+    throw new Error(`Required asset is missing: ${item}`);
   }
 
   const stat = fs.statSync(source);
@@ -23,4 +23,4 @@ for (const item of ['index.html', 'src']) {
   }
 }
 
-console.log('Static site copied to dist/');
+console.log('Site and online room server copied to dist/');

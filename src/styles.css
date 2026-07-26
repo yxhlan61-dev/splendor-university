@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
   color: #172033;
   background: #eef2ff;
@@ -486,4 +486,36 @@ input, select { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px; bac
   .rules-modal h2 { font-size: 25px; }
   .game-over-ranking li { grid-template-columns: 34px 1fr; }
   .rank-score, .rank-cards { grid-column: 2; }
+}
+
+/* 多模式与线上房间 */
+.setup-card-wide { width: min(980px, 100%); }
+.mode-switch { display: flex; gap: 10px; margin: 14px 0 16px; flex-wrap: wrap; }
+.mode-switch button { flex: 1 1 180px; padding: 10px 14px; font-weight: 800; }
+.mode-panel { display: grid; gap: 12px; }
+.mode-panel h2, .sub-card h3 { margin: 0; }
+.online-grid { display: grid; grid-template-columns: minmax(260px, 0.85fr) minmax(320px, 1.15fr); gap: 14px; align-items: start; }
+.sub-card, .room-item, .seat-card {
+  border: 1px solid rgba(148,163,184,0.35);
+  background: #f8fafc;
+  border-radius: 14px;
+  padding: 12px;
+}
+.room-list-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.rooms { display: grid; gap: 10px; max-height: 430px; overflow: auto; padding-right: 4px; }
+.room-item { display: flex; justify-content: space-between; gap: 10px; align-items: center; background: white; }
+.room-item p { margin: 3px 0; }
+.seat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 14px 0; }
+.seat-card.occupied { background: #eef2ff; border-color: #a5b4fc; }
+.seat-card h3 { margin: 0 0 6px; }
+.seat-card p { margin: 0 0 4px; font-weight: 800; }
+.seat-card small { color: #64748b; }
+.online-notice { padding: 8px 10px; margin: 6px 0; border-radius: 10px; background: #e0f2fe; color: #075985; font-weight: 700; }
+.online-notice.your-turn { background: #dcfce7; color: #166534; }
+.player.me { outline: 2px dashed #22c55e; outline-offset: 2px; }
+code { background: #e2e8f0; border-radius: 6px; padding: 1px 5px; }
+
+@media (max-width: 900px) {
+  .online-grid { grid-template-columns: 1fr; }
+  .room-item { align-items: stretch; flex-direction: column; }
 }
