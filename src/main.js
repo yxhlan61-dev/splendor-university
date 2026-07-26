@@ -69,7 +69,7 @@ function loadOnlineSession() {
   try {
     const saved = JSON.parse(raw);
     if (!saved?.roomId || !saved?.clientToken) return null;
-    return { ...saved, room: null, connected: false, eventSource: null, lastFlashId: null };
+    return { ...saved, room: null, connected: false, eventSource: null, pollTimer: null, lastFlashId: null };
   } catch {
     return null;
   }
@@ -82,6 +82,7 @@ function saveOnlineSession() {
 
 function clearOnlineSession() {
   online?.eventSource?.close?.();
+  if (online?.pollTimer) clearInterval(online.pollTimer);
   online = null;
   localStorage.removeItem('universitySplendorOnlineSession');
 }
@@ -96,10 +97,13 @@ async function api(path, options = {}) {
   return data;
 }
 
-function applyOnlineRoom(room) {
+function applyOnlineRoom(room, { realtime = true } = {}) {
   if (!online) return;
   online.room = room;
-  online.connected = true;
+  if (realtime) {
+    online.connected = true;
+    stopRoomPolling();
+  }
   game = room.game || null;
   if (room.flash?.type === 'opportunity' && room.flash.id !== online.lastFlashId) {
     online.lastFlashId = room.flash.id;
@@ -107,13 +111,13 @@ function applyOnlineRoom(room) {
   }
 }
 
-async function refreshRooms() {
+async function refreshRooms({ clearError = true } = {}) {
   roomsLoading = true;
   render();
   try {
     const data = await api('/api/rooms');
     rooms = data.rooms || [];
-    lastError = '';
+    if (clearError) lastError = '';
   } catch (error) {
     rooms = [];
     lastError = `${error.message || error}。如果是在本机开发预览，请用 npm run serve 或 node server.js 启动带房间 API 的服务器；线上部署页面请稍后刷新重试。`;
@@ -137,6 +141,40 @@ async function reconnectOnlineSession() {
   render();
 }
 
+
+function pendingJoinToken(roomId) {
+  const key = `universitySplendorPendingJoin:${roomId}`;
+  let token = sessionStorage.getItem(key);
+  if (!token) {
+    const random = globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 16).toUpperCase()
+      || Math.random().toString(36).slice(2, 12).toUpperCase();
+    token = `C${random}`;
+    sessionStorage.setItem(key, token);
+  }
+  return token;
+}
+
+function startRoomPolling() {
+  if (!online?.roomId || !online?.clientToken || online.pollTimer) return;
+  online.pollTimer = setInterval(async () => {
+    if (!online?.roomId || !online?.clientToken) return;
+    try {
+      const data = await api(`/api/rooms/${encodeURIComponent(online.roomId)}?clientToken=${encodeURIComponent(online.clientToken)}`);
+      applyOnlineRoom(data.room, { realtime: false });
+      render();
+    } catch (error) {
+      lastError = error.message || String(error);
+      render();
+    }
+  }, 3000);
+}
+
+function stopRoomPolling() {
+  if (!online?.pollTimer) return;
+  clearInterval(online.pollTimer);
+  online.pollTimer = null;
+}
+
 function connectRoomEvents() {
   if (!online?.roomId || !online?.clientToken || online.eventSource) return;
   const source = new EventSource(`/api/rooms/${encodeURIComponent(online.roomId)}/events?clientToken=${encodeURIComponent(online.clientToken)}`);
@@ -144,6 +182,7 @@ function connectRoomEvents() {
   source.onopen = () => {
     if (!online) return;
     online.connected = true;
+    stopRoomPolling();
     if (lastError === '线上连接已断开，浏览器正在尝试重连。') lastError = '';
   };
   source.addEventListener('room', (event) => {
@@ -155,6 +194,7 @@ function connectRoomEvents() {
     if (!online) return;
     online.connected = false;
     lastError = '线上连接已断开，浏览器正在尝试重连。';
+    startRoomPolling();
     render();
   };
 }
@@ -173,7 +213,7 @@ async function createOnlineRoom(event) {
         firstMode: form.get('firstMode'),
       }),
     });
-    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, lastFlashId: null };
+    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, pollTimer: null, lastFlashId: null };
     game = data.room.game || null;
     saveOnlineSession();
     connectRoomEvents();
@@ -185,23 +225,31 @@ async function createOnlineRoom(event) {
 
 async function joinOnlineRoom(roomId, playerName = '') {
   if (joiningRoomId) return;
-  const name = playerName || prompt('\u8bf7\u8f93\u5165\u4f60\u7684\u73a9\u5bb6\u540d\u79f0\uff1a', '\u7ebf\u4e0a\u73a9\u5bb6');
-  if (name === null) return;
+  const rawName = playerName || prompt('\u8bf7\u8f93\u5165\u4f60\u7684\u73a9\u5bb6\u540d\u79f0\uff1a', '\u7ebf\u4e0a\u73a9\u5bb6');
+  if (rawName === null) return;
+  const name = String(rawName).trim();
+  if (!name) {
+    lastError = '\u8bf7\u8f93\u5165\u73a9\u5bb6\u540d\u79f0\u540e\u518d\u8fdb\u5165\u623f\u95f4\u3002';
+    render();
+    return;
+  }
   joiningRoomId = roomId;
   render();
+  const clientToken = online?.roomId === roomId ? online.clientToken : pendingJoinToken(roomId);
   try {
     lastError = '';
     const data = await api(`/api/rooms/${encodeURIComponent(roomId)}/join`, {
       method: 'POST',
-      body: JSON.stringify({ playerName: name, clientToken: online?.roomId === roomId ? online.clientToken : undefined }),
+      body: JSON.stringify({ playerName: name, clientToken }),
     });
-    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, lastFlashId: null };
+    online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, pollTimer: null, lastFlashId: null };
     game = data.room.game || null;
     saveOnlineSession();
     connectRoomEvents();
   } catch (error) {
-    lastError = error.message || String(error);
-    await refreshRooms();
+    const message = error.message || String(error);
+    await refreshRooms({ clearError: false });
+    lastError = message;
   } finally {
     joiningRoomId = null;
   }
@@ -549,6 +597,7 @@ function renderOnlineRoom() {
     <main class="setup">
       <div class="setup-card setup-card-wide">
         <h2>房间等待区</h2>
+        <p class="online-notice your-turn">${viewer?.spectator ? '你正在观战。' : `你已进入房间：${escapeHtml(viewer?.playerName || '')}，座位 ${(viewer?.playerIndex ?? 0) + 1}。`} ${online.connected ? '实时同步已连接' : '实时同步连接中，已启用自动刷新兜底'}。</p>
         <p class="muted">把当前页面地址或房间号 ${escapeHtml(room.id)} 发给其他玩家。所有座位坐满后，房主可以开始游戏。</p>
         <div class="seat-grid">
           ${room.seats.map((seat) => `

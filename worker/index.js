@@ -40,6 +40,11 @@ async function readBody(request) {
   }
 }
 
+function normalizeClientToken(value) {
+  const token = String(value || '').trim().toUpperCase();
+  return /^C[A-Z0-9]{8,48}$/.test(token) ? token : '';
+}
+
 function sanitizeName(value, fallback, max = 18) {
   const text = String(value || '').trim().replace(/\s+/g, ' ');
   return (text || fallback).slice(0, max);
@@ -297,8 +302,8 @@ export class GameLobby {
   }
 
   joinRoom(room, body) {
-    const name = sanitizeName(body.playerName, '????');
-    const requestedToken = body.clientToken || '';
+    const name = sanitizeName(body.playerName, '\u73a9\u5bb6');
+    const requestedToken = normalizeClientToken(body.clientToken);
     if (requestedToken && room.clients?.[requestedToken]) {
       const existing = room.clients[requestedToken];
       existing.playerName = name || existing.playerName;
@@ -311,7 +316,7 @@ export class GameLobby {
     const reusableSeat = room.status === 'waiting' ? room.seats.find((seat) => seat.clientId && this.canReplaceSeat(room, seat, now)) : null;
     if (reusableSeat?.clientId) delete room.clients[reusableSeat.clientId];
     const emptySeat = room.status === 'waiting' ? (reusableSeat || room.seats.find((seat) => !seat.clientId)) : null;
-    const clientId = randomId('C');
+    const clientId = requestedToken || randomId('C');
     let client;
     if (emptySeat) {
       emptySeat.clientId = clientId;
