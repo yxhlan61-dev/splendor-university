@@ -39,16 +39,16 @@ export const LEVEL1_TEMPLATES = [
 ];
 
 export const LEVEL2_TEMPLATES = [
-  { id: 'L2_001', name: '专业第一', level: 2, attribute: 'a', cost: { a: 7 }, happiness: 3, copies: 3 },
+  { id: 'L2_001', name: '专业第一', level: 2, attribute: 'a', cost: { a: 7 }, happiness: 5, copies: 6 },
   { id: 'L2_002', name: '保研上岸', level: 2, attribute: null, cost: {}, flexCost: { type: 'abc-total', amount: 15 }, happiness: 5, copies: 6 },
-  { id: 'L2_003', name: '论文产出', level: 2, attribute: 'b', cost: { a: 3, b: 6 }, happiness: 3, copies: 3 },
-  { id: 'L2_004', name: '高薪工作', level: 2, attribute: 'b', cost: { a: 2, b: 6, c: 2, d: 2 }, happiness: 4, copies: 3 },
+  { id: 'L2_003', name: '论文产出', level: 2, attribute: 'b', cost: { a: 3, b: 6 }, happiness: 5, copies: 3 },
+  { id: 'L2_004', name: '高薪工作', level: 2, attribute: 'b', cost: { a: 2, b: 6, c: 2, d: 2 }, happiness: 5, copies: 3 },
   { id: 'L2_005', name: '优秀干部', level: 2, attribute: 'c', cost: { c: 6, d: 3 }, happiness: 3, copies: 6 },
   { id: 'L2_006', name: '校园名人', level: 2, attribute: 'd', cost: { d: 7 }, happiness: 3, copies: 3 },
   { id: 'L2_007', name: '桌游群主', level: 2, attribute: 'd', cost: { d: 5, e: 5 }, happiness: 3, copies: 3 },
-  { id: 'L2_008', name: '游戏大神', level: 2, attribute: 'e', cost: { e: 7 }, happiness: 4, copies: 3 },
+  { id: 'L2_008', name: '游戏大神', level: 2, attribute: 'e', cost: { e: 7 }, happiness: 3, copies: 3 },
   { id: 'L2_009', name: '宿舍领袖', level: 2, attribute: null, cost: {}, flexCost: { type: 'same-kind', amount: 8 }, happiness: 4, copies: 6 },
-  { id: 'L2_010', name: '丰富生活', level: 2, attribute: null, cost: { a: 3, b: 3, c: 3, d: 3, e: 3 }, happiness: 4, copies: 6 },
+  { id: 'L2_010', name: '丰富生活', level: 2, attribute: null, cost: { a: 3, b: 3, c: 3, d: 3, e: 3 }, happiness: 5, copies: 6 },
 ];
 
 export const OPPORTUNITY_TEMPLATES = [
