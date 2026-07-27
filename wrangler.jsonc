@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "splendor-university",
   "main": "./worker/index.js",
@@ -6,7 +6,9 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": [
+      "/api/*"
+    ]
   },
   "durable_objects": {
     "bindings": [
@@ -19,7 +21,19 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["GameLobby"]
+      "new_sqlite_classes": [
+        "GameLobby"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "splendorofuniversity.top",
+      "custom_domain": true
+    },
+    {
+      "pattern": "www.splendorofuniversity.top",
+      "custom_domain": true
     }
   ]
 }
