@@ -434,6 +434,8 @@ async function sendChatMessage(event) {
       body: JSON.stringify({ clientToken: online.clientToken, message }),
     });
     if (input) input.value = '';
+    const liveInput = document.querySelector('#chatForm [name="message"]');
+    if (liveInput) liveInput.value = '';
     setCurrentChatDraft('');
     applyOnlineRoom(data.room);
   } catch (error) {
