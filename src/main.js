@@ -603,13 +603,12 @@ function renderOnlineLobby() {
 function renderRoomListItem(room) {
   const statusText = { waiting: '等待中', playing: '游戏中', game_over: '已结束' }[room.status] || room.status;
   const canJoin = room.status === 'waiting' && room.occupied < room.playerCount;
-  const canWatch = room.status !== 'waiting';
   const isJoining = joiningRoomId === room.id;
-  const buttonText = isJoining ? '\u8fdb\u5165\u4e2d...' : (canJoin ? '\u8fdb\u5165\u623f\u95f4' : (room.status === 'waiting' ? '\u623f\u95f4\u5df2\u6ee1' : '\u89c2\u6218'));
-  const buttonAttrs = !isJoining && (canJoin || canWatch) ? `data-join-room="${escapeHtml(room.id)}"` : 'disabled';
+  const buttonText = isJoining ? '\u8fdb\u5165\u4e2d...' : (canJoin ? '\u8fdb\u5165\u623f\u95f4' : (room.status === 'waiting' ? '\u623f\u95f4\u5df2\u6ee1' : statusText));
+  const buttonAttrs = !isJoining && canJoin ? `data-join-room="${escapeHtml(room.id)}"` : 'disabled';
   const hint = canJoin
-    ? '可加入空位'
-    : (room.status === 'waiting' ? '座位已满；如果是别人退出后的旧房间，请点刷新，服务器会自动释放离线空位。' : '游戏已开始，只能观战。');
+    ? '\u53ef\u52a0\u5165\u7a7a\u4f4d'
+    : (room.status === 'waiting' ? '\u5ea7\u4f4d\u5df2\u6ee1\uff1b\u5982\u679c\u662f\u522b\u4eba\u9000\u51fa\u540e\u7684\u65e7\u623f\u95f4\uff0c\u8bf7\u70b9\u5237\u65b0\uff0c\u670d\u52a1\u5668\u4f1a\u81ea\u52a8\u91ca\u653e\u79bb\u7ebf\u7a7a\u4f4d\u3002' : (room.status === 'playing' ? '\u6e38\u620f\u5df2\u5f00\u59cb\uff0c\u65e0\u6cd5\u52a0\u5165\u3002' : '\u623f\u95f4\u5df2\u7ed3\u675f\uff0c\u65e0\u6cd5\u52a0\u5165\u3002'));
   return `
     <article class="room-item">
       <div>

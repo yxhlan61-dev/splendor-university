@@ -391,7 +391,7 @@ function joinRoom(room, body) {
   } else if (room.status === 'waiting') {
     throw new Error('\u623f\u95f4\u5df2\u6ee1\uff0c\u8bf7\u5237\u65b0\u623f\u95f4\u5217\u8868\u6216\u7b49\u5f85\u7a7a\u4f4d\u91ca\u653e');
   } else {
-    client = { clientId, playerIndex: null, playerName: name, spectator: true, ready: false, connected: false, lastSeen: Date.now() };
+    throw new Error('\u6e38\u620f\u5df2\u5f00\u59cb\uff0c\u65e0\u6cd5\u52a0\u5165\u623f\u95f4');
   }
   room.clients.set(clientId, client);
   touch(room);
