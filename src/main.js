@@ -16,6 +16,7 @@ import { GAME_VERSION, LEVEL1_TEMPLATES, LEVEL2_TEMPLATES, MARKET_SIZE, OPPORTUN
 
 let game = null;
 let selectedDifferent = new Set();
+let selectedSame = null;
 let lastError = '';
 let opportunityAnimation = null;
 let gameOverDismissed = false;
@@ -205,6 +206,7 @@ function scheduleOnlineAutoExit(message, delay = 2200) {
     clearOnlineSession();
     game = null;
     selectedDifferent.clear();
+    selectedSame = null;
     setupMode = 'online';
     refreshRooms({ clearError: false });
     render();
@@ -310,6 +312,7 @@ function connectRoomEvents() {
   source.addEventListener('room', (event) => {
     applyOnlineRoom(JSON.parse(event.data));
     selectedDifferent.clear();
+    selectedSame = null;
     render();
   });
   source.onerror = () => {
@@ -453,6 +456,7 @@ async function sendOnlineAction(type, payload = {}) {
       body: JSON.stringify({ clientToken: online.clientToken, type, payload }),
     });
     selectedDifferent.clear();
+    selectedSame = null;
     applyOnlineRoom(data.room);
   } catch (error) {
     lastError = error.message || String(error);
@@ -473,6 +477,7 @@ function leaveOnlineRoom() {
   clearOnlineSession();
   game = null;
   selectedDifferent.clear();
+  selectedSame = null;
   setupMode = 'online';
   refreshRooms();
   render();
@@ -492,6 +497,7 @@ function runAction(fn, onlineAction) {
     lastError = '';
     fn();
     selectedDifferent.clear();
+    selectedSame = null;
     save();
   } catch (error) {
     lastError = error.message || String(error);
@@ -512,6 +518,7 @@ function startGame(event) {
   rulesOpen = false;
   cardCatalogOpen = false;
   selectedDifferent.clear();
+  selectedSame = null;
   save();
   render();
 }
@@ -529,6 +536,7 @@ function resetGame() {
   cardCatalogOpen = false;
   localStorage.removeItem('universitySplendorGame');
   selectedDifferent.clear();
+  selectedSame = null;
   render();
 }
 
@@ -952,12 +960,13 @@ function renderPhaseControls() {
       <h2>主动作</h2>
       <div class="action-block">
         <h3>拿 3 不同</h3>
-        <div class="button-row">${TASK_TYPES.map((type) => `<button class="select-token ${selectedDifferent.has(type) ? 'selected' : ''}" ${game.supply[type] <= 0 || !canInteract ? 'disabled' : ''} data-toggle-different="${type}">${TASK_INFO[type].name}</button>`).join('')}</div>
+        <div class="button-row">${TASK_TYPES.map((type) => `<button class="action-token select-token ${selectedDifferent.has(type) ? 'selected' : ''}" style="--token-color:${TASK_INFO[type].color}" ${game.supply[type] <= 0 || !canInteract ? 'disabled' : ''} data-toggle-different="${type}">${TASK_INFO[type].name}</button>`).join('')}</div>
         <button class="primary" ${!canInteract ? 'disabled' : ''} data-action="takeDifferent">拿所选</button>
       </div>
       <div class="action-block">
         <h3>拿 2 相同</h3>
-        <div class="button-row">${TASK_TYPES.map((type) => `<button ${game.supply[type] < 4 || !canInteract ? 'disabled' : ''} data-take-same="${type}">2${TASK_INFO[type].name}</button>`).join('')}</div>
+        <div class="button-row">${TASK_TYPES.map((type) => `<button class="action-token ${selectedSame === type ? 'selected' : ''}" style="--token-color:${TASK_INFO[type].color}" ${game.supply[type] < 4 || !canInteract ? 'disabled' : ''} data-toggle-same="${type}">2${TASK_INFO[type].name}</button>`).join('')}</div>
+        <button class="primary" ${!canInteract || !selectedSame || game.supply[selectedSame] < 4 ? 'disabled' : ''} data-action="takeSame">\u786e\u5b9a\u62ff\u53d6</button>
       </div>
       <div class="action-block">
         <h3>盲预留</h3>
@@ -1209,7 +1218,7 @@ function renderRulesModal() {
             <p>\u53d1\u5c55\u5361\u662f\u4e3b\u8981\u7684\u5f97\u5206\u548c\u6298\u6263\u6765\u6e90\uff0c\u724c\u9762\u4e0a\u4f1a\u663e\u793a\u300c\u5c5e\u6027\u300d\u3001\u300c\u6210\u672c\u300d\u548c\u300c\u5f00\u5fc3\u503c\u300d\u3002</p>
             <ul>
               <li><strong>\u6210\u672c</strong>\uff1a\u8868\u793a\u8d62\u53d6\u8fd9\u5f20\u5361\u9700\u8981\u652f\u4ed8\u7684\u4efb\u52a1\u5361\u6570\u91cf\u3002\u4f8b\u5982\u6210\u672c\u5199\u7740\u300c\u5b66\u4e60 2\u3001\u793e\u4ea4 1\u300d\uff0c\u5c31\u9700\u8981\u4ea4\u56de 2 \u5f20\u5b66\u4e60\u548c 1 \u5f20\u793e\u4ea4\u4efb\u52a1\u5361\u3002</li>
-              <li><strong>???</strong>\uff1a\u5361\u724c\u53f3\u4e0a\u89d2\u7684\u6570\u5b57\u662f\u8fd9\u5f20\u5361\u63d0\u4f9b\u7684\u5f00\u5fc3\u503c\u3002\u8d62\u53d6\u540e\u7acb\u5373\u52a0\u5230\u73a9\u5bb6\u603b\u5f00\u5fc3\u503c\uff0c\u7528\u4e8e\u89e6\u53d1 15 \u5f00\u5fc3\u503c\u7ec8\u5c40\u548c\u6700\u7ec8\u80dc\u8d1f\u7ed3\u7b97\u3002\u6ca1\u6709\u6570\u5b57\u6216\u4e3a 0 \u5219\u4e0d\u52a0\u5206\u3002</li>
+              <li><strong>\u5f00\u5fc3\u503c</strong>\uff1a\u5361\u724c\u53f3\u4e0a\u89d2\u7684\u6570\u5b57\u662f\u8fd9\u5f20\u5361\u63d0\u4f9b\u7684\u5f00\u5fc3\u503c\u3002\u8d62\u53d6\u540e\u7acb\u5373\u52a0\u5230\u73a9\u5bb6\u603b\u5f00\u5fc3\u503c\uff0c\u7528\u4e8e\u89e6\u53d1 15 \u5f00\u5fc3\u503c\u7ec8\u5c40\u548c\u6700\u7ec8\u80dc\u8d1f\u7ed3\u7b97\u3002\u6ca1\u6709\u6570\u5b57\u6216\u4e3a 0 \u5219\u4e0d\u52a0\u5206\u3002</li>
               <li><strong>\u6298\u6263</strong>\uff1a\u6709\u5c5e\u6027\u53d1\u5c55\u5361\u8d62\u53d6\u540e\u4f1a\u6210\u4e3a\u6c38\u4e45\u5c5e\u6027\uff0c\u4eca\u540e\u652f\u4ed8\u5bf9\u5e94\u5c5e\u6027\u6210\u672c\u65f6\uff0c\u6bcf\u5f20\u53ef\u62b5\u6263 1 \u70b9\u3002\u4e07\u80fd\u5361\u53ef\u5728\u6298\u6263\u540e\u8865\u8db3\u4efb\u610f\u4e00\u79cd\u4e0d\u591f\u7684\u6210\u672c\u3002</li>
               <li><strong>\u65e0\u5c5e\u6027\u5361</strong>\uff1a\u53ef\u4ee5\u8d62\u53d6\u5e76\u83b7\u5f97\u724c\u9762\u5f00\u5fc3\u503c\uff0c\u4f46\u4e0d\u63d0\u4f9b\u6c38\u4e45\u5c5e\u6027\uff0c\u4e5f\u4e0d\u80fd\u9884\u7559\u3002</li>
             </ul>
@@ -1335,10 +1344,18 @@ function bindEvents() {
     () => takeDifferent(game, [...selectedDifferent]),
     { type: 'takeDifferent', payload: { types: [...selectedDifferent] } },
   ));
-  document.querySelectorAll('[data-take-same]').forEach((btn) => btn.addEventListener('click', () => runAction(
-    () => takeSame(game, btn.dataset.takeSame),
-    { type: 'takeSame', payload: { tokenType: btn.dataset.takeSame } },
-  )));
+  document.querySelectorAll('[data-toggle-same]').forEach((btn) => btn.addEventListener('click', () => {
+    const type = btn.dataset.toggleSame;
+    selectedSame = selectedSame === type ? null : type;
+    render();
+  }));
+  document.querySelector('[data-action="takeSame"]')?.addEventListener('click', () => {
+    const tokenType = selectedSame;
+    runAction(
+      () => takeSame(game, tokenType),
+      { type: 'takeSame', payload: { tokenType } },
+    );
+  });
   document.querySelectorAll('[data-reserve]').forEach((btn) => btn.addEventListener('click', () => runAction(
     () => reserveMarketCard(game, Number(btn.dataset.level), btn.dataset.reserve),
     { type: 'reserveMarket', payload: { level: Number(btn.dataset.level), instanceId: btn.dataset.reserve } },

@@ -2,7 +2,7 @@ export const TASK_TYPES = ['a', 'b', 'c', 'd', 'e'];
 export const TOKEN_TYPES = [...TASK_TYPES, 'wild'];
 
 export const TASK_INFO = {
-  a: { name: '学习', short: '学', color: '#f8fafc' },
+  a: { name: '学习', short: '习', color: '#f8fafc' },
   b: { name: '科研', short: '研', color: '#dbeafe' },
   c: { name: '学工', short: '工', color: '#dcfce7' },
   d: { name: '社交', short: '社', color: '#fee2e2' },
