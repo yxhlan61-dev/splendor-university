@@ -12,7 +12,7 @@ import {
   takeSame,
   totalTokens,
 } from './game.js';
-import { GAME_VERSION, MARKET_SIZE, RESERVE_LIMIT, TASK_INFO, TASK_TYPES, TOKEN_LIMIT, TOKEN_TYPES } from './data.js';
+import { GAME_VERSION, LEVEL1_TEMPLATES, LEVEL2_TEMPLATES, MARKET_SIZE, OPPORTUNITY_TEMPLATES, RESERVE_LIMIT, TASK_INFO, TASK_TYPES, TOKEN_LIMIT, TOKEN_TYPES } from './data.js';
 
 let game = null;
 let selectedDifferent = new Set();
@@ -20,6 +20,7 @@ let lastError = '';
 let opportunityAnimation = null;
 let gameOverDismissed = false;
 let rulesOpen = false;
+let cardCatalogOpen = false;
 let setupMode = 'menu';
 let rooms = [];
 let roomsLoading = false;
@@ -509,6 +510,7 @@ function startGame(event) {
   opportunityAnimation = null;
   gameOverDismissed = false;
   rulesOpen = false;
+  cardCatalogOpen = false;
   selectedDifferent.clear();
   save();
   render();
@@ -524,6 +526,7 @@ function resetGame() {
   opportunityAnimation = null;
   gameOverDismissed = false;
   rulesOpen = false;
+  cardCatalogOpen = false;
   localStorage.removeItem('universitySplendorGame');
   selectedDifferent.clear();
   render();
@@ -551,6 +554,7 @@ function render() {
     : `本地多人 ${GAME_VERSION}`;
   app.innerHTML = `
     ${renderRulesModal()}
+    ${renderCardCatalogModal()}
     ${renderGameOver()}
     ${renderOpportunityAnimation()}
     <header class="hero">
@@ -560,6 +564,7 @@ function render() {
       </div>
       <div class="header-actions">
         ${isOnline() ? `<button id="copyRoomBtn">复制房间号</button>` : ''}
+        <button id="cardCatalogBtn">卡牌图鉴</button>
         <button id="rulesBtn">规则介绍</button>
         ${isOnline() ? `<button class="danger" id="leaveOnlineBtn">退出房间</button>` : '<button id="saveBtn">保存进度</button><button class="danger" id="resetBtn">重新开始</button>'}
       </div>
@@ -606,7 +611,9 @@ function renderSetup() {
   const saved = load();
   app.innerHTML = `
     ${renderRulesModal()}
+    ${renderCardCatalogModal()}
     <div class="setup-top-actions">
+      <button id="cardCatalogBtn">卡牌图鉴</button>
       <button id="rulesBtn">规则介绍</button>
     </div>
     <main class="setup">
@@ -770,6 +777,7 @@ function renderOnlineRoom() {
     : !allGuestsReady ? '还有玩家未准备。' : '所有玩家已准备，可以开始。';
   app.innerHTML = `
     ${renderRulesModal()}
+    ${renderCardCatalogModal()}
     <header class="hero">
       <div>
         <h1>${escapeHtml(room.name)}</h1>
@@ -777,6 +785,7 @@ function renderOnlineRoom() {
       </div>
       <div class="header-actions">
         <button id="copyRoomBtn">复制房间号</button>
+        <button id="cardCatalogBtn">卡牌图鉴</button>
         <button id="rulesBtn">规则介绍</button>
         <button class="danger" id="leaveOnlineBtn">退出房间</button>
       </div>
@@ -1043,6 +1052,115 @@ function renderLog() {
 }
 
 
+
+function cardCopies(template) {
+  return template.copies ?? 1;
+}
+
+function catalogTotal(templates) {
+  return templates.reduce((sum, template) => sum + cardCopies(template), 0);
+}
+
+function formatAttribute(attribute) {
+  return attribute ? `${TASK_INFO[attribute].name} ${attribute}` : '\u65e0\u5c5e\u6027';
+}
+
+function formatCost(cost = {}, flexCost = null) {
+  const parts = TASK_TYPES.filter((type) => cost[type]).map((type) => `${TASK_INFO[type].name}${type}\u00d7${cost[type]}`);
+  if (flexCost?.type === 'abc-total') parts.push('\u5b66\u4e60/\u79d1\u7814/\u5b66\u5de5\u5408\u8ba1 15');
+  if (flexCost?.type === 'same-kind') parts.push('\u4efb\u610f\u540c\u79cd\u7c7b\u5408\u8ba1 8');
+  return parts.length ? parts.join('\u3001') : '\u65e0';
+}
+
+function renderCatalogSummary(templates) {
+  const counts = TASK_TYPES.map((type) => ({ type, count: templates.filter((card) => card.attribute === type).reduce((sum, card) => sum + cardCopies(card), 0) }));
+  const noneCount = templates.filter((card) => !card.attribute).reduce((sum, card) => sum + cardCopies(card), 0);
+  return `
+    <div class="catalog-summary">
+      <span>\u603b\u8ba1 ${catalogTotal(templates)} \u5f20</span>
+      ${counts.map(({ type, count }) => `<span>${TASK_INFO[type].name}${type}\uff1a${count}</span>`).join('')}
+      ${noneCount ? `<span>\u65e0\u5c5e\u6027\uff1a${noneCount}</span>` : ''}
+    </div>
+  `;
+}
+
+function renderDevelopmentCatalog(title, templates) {
+  return `
+    <section class="catalog-section">
+      <h3>${title}\uff08${templates.length} \u79cd / ${catalogTotal(templates)} \u5f20\uff09</h3>
+      ${renderCatalogSummary(templates)}
+      <div class="catalog-table-wrap">
+        <table class="catalog-table">
+          <thead>
+            <tr><th>ID</th><th>\u540d\u79f0</th><th>\u5c5e\u6027</th><th>\u6210\u672c</th><th>\u5f00\u5fc3\u503c</th><th>\u6570\u91cf</th></tr>
+          </thead>
+          <tbody>
+            ${templates.map((card) => `
+              <tr>
+                <td><code>${escapeHtml(card.id)}</code></td>
+                <td>${escapeHtml(card.name)}</td>
+                <td>${escapeHtml(formatAttribute(card.attribute))}</td>
+                <td>${escapeHtml(formatCost(card.cost, card.flexCost))}</td>
+                <td>${card.happiness || 0}</td>
+                <td>${cardCopies(card)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderOpportunityCatalog() {
+  const total = catalogTotal(OPPORTUNITY_TEMPLATES);
+  return `
+    <section class="catalog-section catalog-section-full">
+      <h3>\u673a\u9047\u5361\uff08${OPPORTUNITY_TEMPLATES.length} \u79cd / ${total} \u5f20\uff0c\u62bd\u7a7a\u540e\u91cd\u7ec4\uff09</h3>
+      ${renderCatalogSummary(OPPORTUNITY_TEMPLATES)}
+      <div class="catalog-table-wrap">
+        <table class="catalog-table">
+          <thead>
+            <tr><th>ID</th><th>\u540d\u79f0</th><th>\u5bf9\u5e94\u5c5e\u6027</th><th>\u6570\u91cf</th><th>\u6548\u679c</th></tr>
+          </thead>
+          <tbody>
+            ${OPPORTUNITY_TEMPLATES.map((card) => `
+              <tr>
+                <td><code>${escapeHtml(card.id)}</code></td>
+                <td>${escapeHtml(card.name)}</td>
+                <td>${escapeHtml(formatAttribute(card.attribute))}</td>
+                <td>${cardCopies(card)}</td>
+                <td>${escapeHtml(`${TASK_INFO[card.attribute].name}\u6c38\u4e45\u5c5e\u6027\u552f\u4e00\u6700\u591a\u8005\u83b7\u5f97\u6700\u591a 2 \u5f20${TASK_INFO[card.attribute].name}\u4efb\u52a1\u5361\uff1b\u5e76\u5217\u65f6\u65e0\u4eba\u83b7\u5f97\u5956\u52b1\u3002`)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function renderCardCatalogModal() {
+  if (!cardCatalogOpen) return '';
+  return `
+    <div class="rules-overlay" id="cardCatalogOverlay" role="dialog" aria-modal="true" aria-labelledby="cardCatalogTitle">
+      <article class="rules-modal catalog-modal">
+        <button class="rules-close" id="cardCatalogCloseBtn" aria-label="\u5173\u95ed\u5361\u724c\u56fe\u9274">\u00d7</button>
+        <header class="rules-modal-header">
+          <p class="rules-kicker">\u516c\u5f00\u724c\u6c60\u4fe1\u606f</p>
+          <h2 id="cardCatalogTitle">\u5361\u724c\u56fe\u9274</h2>
+          <p>\u4e0b\u8868\u5217\u51fa\u672c\u7248\u672c\u4e00\u7ea7\u3001\u4e8c\u7ea7\u53d1\u5c55\u5361\u4ee5\u53ca\u673a\u9047\u5361\u7684\u79cd\u7c7b\u548c\u6570\u91cf\uff0c\u4fbf\u4e8e\u73a9\u5bb6\u4f30\u7b97\u5269\u4f59\u724c\u6c60\u548c\u9009\u62e9\u6700\u4f18\u7b56\u7565\u3002</p>
+        </header>
+        <div class="catalog-content">
+          ${renderDevelopmentCatalog('\u4e00\u7ea7\u53d1\u5c55\u5361', LEVEL1_TEMPLATES)}
+          ${renderDevelopmentCatalog('\u4e8c\u7ea7\u53d1\u5c55\u5361', LEVEL2_TEMPLATES)}
+          ${renderOpportunityCatalog()}
+        </div>
+      </article>
+    </div>
+  `;
+}
+
 function renderRulesModal() {
   if (!rulesOpen) return '';
   return `
@@ -1136,17 +1254,33 @@ function renderGameOver() {
 }
 
 function bindRulesEvents() {
+  document.querySelector('#cardCatalogBtn')?.addEventListener('click', () => {
+    cardCatalogOpen = true;
+    rulesOpen = false;
+    render();
+  });
   document.querySelector('#rulesBtn')?.addEventListener('click', () => {
     rulesOpen = true;
+    cardCatalogOpen = false;
     render();
   });
   document.querySelector('#rulesCloseBtn')?.addEventListener('click', () => {
     rulesOpen = false;
     render();
   });
+  document.querySelector('#cardCatalogCloseBtn')?.addEventListener('click', () => {
+    cardCatalogOpen = false;
+    render();
+  });
   document.querySelector('#rulesOverlay')?.addEventListener('click', (event) => {
     if (event.target.id === 'rulesOverlay') {
       rulesOpen = false;
+      render();
+    }
+  });
+  document.querySelector('#cardCatalogOverlay')?.addEventListener('click', (event) => {
+    if (event.target.id === 'cardCatalogOverlay') {
+      cardCatalogOpen = false;
       render();
     }
   });
