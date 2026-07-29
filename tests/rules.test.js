@@ -39,7 +39,7 @@ function testInit() {
   assert.equal(g2.supply.wild, 5);
   assert.equal(g2.decks.level1.length + g2.market.level1.length, 80);
   assert.equal(g2.decks.level2.length + g2.market.level2.length, 45);
-  assert.equal(g2.decks.opportunity.length, 5);
+  assert.equal(g2.decks.opportunity.length, 6);
   assert.equal(LEVEL1_TEMPLATES.find((c) => c.id === 'L1_007').copies, 10);
   assert.equal(LEVEL2_TEMPLATES.find((c) => c.id === 'L2_001').copies, 6);
   assert.equal(LEVEL2_TEMPLATES.find((c) => c.id === 'L2_002').copies, 6);
@@ -154,7 +154,7 @@ function testOpportunityDrawWithReplacement() {
 
   const purchase = buyCard(game, card.instanceId, 0, () => 0.5);
   assert.equal(purchase.opportunity.card.templateId, 'O_003');
-  assert.equal(game.decks.opportunity.length, 5);
+  assert.equal(game.decks.opportunity.length, 6);
   assert.equal(game.discard.opportunity.length, 0);
   assert.equal(game.phase, 'player_action');
 
@@ -165,7 +165,33 @@ function testOpportunityDrawWithReplacement() {
   game.market.level1[0] = secondCard;
   const second = buyCard(game, secondCard.instanceId, 0, () => 0.5);
   assert.equal(second.opportunity.card.templateId, 'O_003');
-  assert.equal(game.decks.opportunity.length, 5);
+  assert.equal(game.decks.opportunity.length, 6);
+}
+
+
+function testPovertyGrantOpportunity() {
+  const game = deterministicGame(3);
+  game.players[0].happiness = 4;
+  giveCard(game.players[0], 'a', 1);
+  game.players[1].happiness = 2;
+  giveCard(game.players[1], 'b', 1);
+  game.players[2].happiness = 1;
+  game.supply.wild = 1;
+
+  const result = resolveOpportunity(game, { name: '\u8d2b\u56f0\u8865\u52a9', attribute: null, effect: 'poverty-grant' });
+  assert.equal(result.winnerIndex, 2);
+  assert.equal(result.reward, 1);
+  assert.equal(game.players[2].tokens.wild, 1);
+  assert.equal(game.supply.wild, 0);
+
+  const noSupply = resolveOpportunity(game, { name: '\u8d2b\u56f0\u8865\u52a9', attribute: null, effect: 'poverty-grant' });
+  assert.equal(noSupply.winnerIndex, 2);
+  assert.equal(noSupply.reward, 0);
+
+  game.players[1].happiness = 1;
+  game.players[1].ownedCards = [];
+  const tie = resolveOpportunity(game, { name: '\u8d2b\u56f0\u8865\u52a9', attribute: null, effect: 'poverty-grant' });
+  assert.equal(tie.winnerIndex, null);
 }
 
 function testOpportunityRewardForOtherPlayerCanRequireDiscard() {
@@ -218,6 +244,7 @@ testFixedPurchaseDiscount();
 testFlexibleCosts();
 testOpportunity();
 testOpportunityDrawWithReplacement();
+testPovertyGrantOpportunity();
 testOpportunityRewardForOtherPlayerCanRequireDiscard();
 testDiscardAndEndgame();
 

@@ -56,5 +56,6 @@ export const OPPORTUNITY_TEMPLATES = [
   { id: 'O_002', name: '学术会议', attribute: 'b' },
   { id: 'O_003', name: '优干答辩', attribute: 'c', copies: 2 },
   { id: 'O_004', name: '草地音乐节', attribute: 'd' },
+  { id: 'O_005', name: '贫困补助', attribute: null, effect: 'poverty-grant' },
 ];
 

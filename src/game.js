@@ -49,8 +49,14 @@ function createOpportunityDeck(cycle = 0) {
   return cards;
 }
 
+function opportunityPoolMatchesTemplates(pool = []) {
+  const expected = OPPORTUNITY_TEMPLATES.flatMap((template) => Array(template.copies ?? 1).fill(template.id)).sort();
+  const actual = pool.map((card) => card.templateId || card.id).sort();
+  return actual.length === expected.length && actual.every((id, index) => id === expected[index]);
+}
+
 function getOpportunityPool(game) {
-  if (!game.decks.opportunity?.length) {
+  if (!opportunityPoolMatchesTemplates(game.decks.opportunity)) {
     game.opportunityCycle = game.opportunityCycle || 0;
     game.decks.opportunity = createOpportunityDeck(game.opportunityCycle);
   }
@@ -423,22 +429,41 @@ export function drawOpportunity(game, rng = Math.random) {
   return draw;
 }
 
+function resolvePovertyGrantOpportunity(game, card) {
+  const scores = game.players.map((player) => (player.happiness || 0) + (player.ownedCards?.length || 0));
+  const min = Math.min(...scores);
+  const candidates = scores.map((score, index) => ({ score, index })).filter((item) => item.score === min);
+  if (candidates.length !== 1) {
+    return { winnerIndex: null, reward: 0, tokenType: 'wild', message: `机遇「${card.name}」：目前阶段得分+永久发展卡数量并列最少，无人获得奖励。` };
+  }
+  const winnerIndex = candidates[0].index;
+  const winner = game.players[winnerIndex];
+  const reward = Math.min(1, game.supply.wild || 0);
+  if (reward <= 0) {
+    return { winnerIndex, reward: 0, tokenType: 'wild', message: `机遇「${card.name}」：${winner.name} 目前阶段得分+永久发展卡数量唯一最少，但万能卡供应为 0，无奖励。` };
+  }
+  game.supply.wild -= reward;
+  winner.tokens.wild += reward;
+  return { winnerIndex, reward, tokenType: 'wild', message: `机遇「${card.name}」：${winner.name} 目前阶段得分+永久发展卡数量唯一最少，获得 ${reward} 张万能卡。` };
+}
+
 export function resolveOpportunity(game, card) {
+  if (card.effect === 'poverty-grant') return resolvePovertyGrantOpportunity(game, card);
   const counts = game.players.map((player) => getPermanentCounts(player)[card.attribute] || 0);
   const max = Math.max(...counts);
   const leaders = counts.map((count, index) => ({ count, index })).filter((item) => item.count === max);
   const attrName = TASK_INFO[card.attribute].name;
   if (leaders.length !== 1) {
-    return { winnerIndex: null, reward: 0, message: `机遇「${card.name}」：${attrName}属性并列最多，无人获得奖励。` };
+    return { winnerIndex: null, reward: 0, message: `\u673a\u9047\u300c${card.name}\u300d\uff1a${attrName}\u5c5e\u6027\u5e76\u5217\u6700\u591a\uff0c\u65e0\u4eba\u83b7\u5f97\u5956\u52b1\u3002` };
   }
   const winner = game.players[leaders[0].index];
   const reward = Math.min(2, game.supply[card.attribute]);
   if (reward <= 0) {
-    return { winnerIndex: leaders[0].index, reward: 0, message: `机遇「${card.name}」：${winner.name} ${attrName}最多，但供应为 0，无奖励。` };
+    return { winnerIndex: leaders[0].index, reward: 0, message: `\u673a\u9047\u300c${card.name}\u300d\uff1a${winner.name} ${attrName}\u6700\u591a\uff0c\u4f46\u4f9b\u5e94\u4e3a 0\uff0c\u65e0\u5956\u52b1\u3002` };
   }
   game.supply[card.attribute] -= reward;
   winner.tokens[card.attribute] += reward;
-  return { winnerIndex: leaders[0].index, reward, message: `机遇「${card.name}」：${winner.name} ${attrName}最多，获得 ${reward} 张${attrName}任务卡。` };
+  return { winnerIndex: leaders[0].index, reward, message: `\u673a\u9047\u300c${card.name}\u300d\uff1a${winner.name} ${attrName}\u6700\u591a\uff0c\u83b7\u5f97 ${reward} \u5f20${attrName}\u4efb\u52a1\u5361\u3002` };
 }
 
 function findOverLimitPlayerIndex(game) {

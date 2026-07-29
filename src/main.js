@@ -587,7 +587,7 @@ function render() {
         </div>
         <div class="panel">
           <h2>牌库</h2>
-          <p>一级 ${game.decks.level1.length} 张 · 二级 ${game.decks.level2.length} 张 · 机遇池 ${game.decks.opportunity.length} 张（有放回）</p>
+          <p>一级 ${game.decks.level1.length} 张 · 二级 ${game.decks.level2.length} 张 · 机遇池 ${catalogTotal(OPPORTUNITY_TEMPLATES)} 张（有放回）</p>
           <p>市场：每级最多 ${MARKET_SIZE} 张</p>
         </div>
       </section>
@@ -1072,6 +1072,19 @@ function formatCost(cost = {}, flexCost = null) {
   return parts.length ? parts.join('\u3001') : '\u65e0';
 }
 
+
+function formatOpportunityAttribute(card) {
+  if (card.effect === 'poverty-grant') return '\u65e0\u5c5e\u6027\uff08\u91d1\u8272\uff09';
+  return formatAttribute(card.attribute);
+}
+
+function formatOpportunityEffect(card) {
+  if (card.effect === 'poverty-grant') {
+    return '目前阶段得分+永久发展卡数量唯一最少的玩家获得最多 1 张万能卡；并列时无人获得奖励；若场上没有万能卡也无法获得奖励。';
+  }
+  return `${TASK_INFO[card.attribute].name}永久属性唯一最多者获得最多 2 张${TASK_INFO[card.attribute].name}任务卡；并列时无人获得奖励。`;
+}
+
 function renderCatalogSummary(templates) {
   const counts = TASK_TYPES.map((type) => ({ type, count: templates.filter((card) => card.attribute === type).reduce((sum, card) => sum + cardCopies(card), 0) }));
   const noneCount = templates.filter((card) => !card.attribute).reduce((sum, card) => sum + cardCopies(card), 0);
@@ -1128,9 +1141,9 @@ function renderOpportunityCatalog() {
               <tr>
                 <td><code>${escapeHtml(card.id)}</code></td>
                 <td>${escapeHtml(card.name)}</td>
-                <td>${escapeHtml(formatAttribute(card.attribute))}</td>
+                <td>${escapeHtml(formatOpportunityAttribute(card))}</td>
                 <td>${cardCopies(card)}</td>
-                <td>${escapeHtml(`${TASK_INFO[card.attribute].name}\u6c38\u4e45\u5c5e\u6027\u552f\u4e00\u6700\u591a\u8005\u83b7\u5f97\u6700\u591a 2 \u5f20${TASK_INFO[card.attribute].name}\u4efb\u52a1\u5361\uff1b\u5e76\u5217\u65f6\u65e0\u4eba\u83b7\u5f97\u5956\u52b1\u3002`)}</td>
+                <td>${escapeHtml(formatOpportunityEffect(card))}</td>
               </tr>
             `).join('')}
           </tbody>
