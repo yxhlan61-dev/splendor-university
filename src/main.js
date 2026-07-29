@@ -26,6 +26,10 @@ let roomsLoading = false;
 let joiningRoomId = null;
 let online = loadOnlineSession();
 
+let onlineLobbyDraft = loadOnlineLobbyDraft();
+const chatDraftByRoom = new Map();
+let pendingChatFocus = null;
+
 const app = document.querySelector('#app');
 
 function isOnline() {
@@ -63,6 +67,87 @@ function load() {
   }
 }
 
+function defaultOnlineLobbyDraft() {
+  return {
+    roomName: '\u6211\u7684\u623f\u95f4',
+    playerName: '\u73a9\u5bb61',
+    playerCount: '2',
+    firstMode: 'host',
+  };
+}
+
+function loadOnlineLobbyDraft() {
+  const defaults = defaultOnlineLobbyDraft();
+  const raw = localStorage.getItem('universitySplendorOnlineLobbyDraft');
+  if (!raw) return defaults;
+  try {
+    const saved = JSON.parse(raw);
+    return {
+      roomName: String(saved?.roomName || defaults.roomName),
+      playerName: String(saved?.playerName || defaults.playerName),
+      playerCount: ['2', '3', '4'].includes(String(saved?.playerCount)) ? String(saved.playerCount) : defaults.playerCount,
+      firstMode: saved?.firstMode === 'random' ? 'random' : defaults.firstMode,
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveOnlineLobbyDraft() {
+  localStorage.setItem('universitySplendorOnlineLobbyDraft', JSON.stringify(onlineLobbyDraft));
+}
+
+function updateOnlineLobbyDraftFromForm(form) {
+  if (!form) return;
+  const data = new FormData(form);
+  onlineLobbyDraft = {
+    roomName: String(data.get('roomName') || ''),
+    playerName: String(data.get('playerName') || ''),
+    playerCount: String(data.get('playerCount') || '2'),
+    firstMode: data.get('firstMode') === 'random' ? 'random' : 'host',
+  };
+  saveOnlineLobbyDraft();
+}
+
+function captureTransientInputs() {
+  updateOnlineLobbyDraftFromForm(document.querySelector('#createRoomForm'));
+  const chatInput = document.querySelector('#chatForm [name="message"]');
+  if (!chatInput || !online?.roomId) return;
+  chatDraftByRoom.set(online.roomId, chatInput.value);
+  if (document.activeElement === chatInput) {
+    pendingChatFocus = {
+      roomId: online.roomId,
+      start: chatInput.selectionStart,
+      end: chatInput.selectionEnd,
+    };
+  }
+}
+
+function restoreTransientInputs() {
+  if (!pendingChatFocus || pendingChatFocus.roomId !== online?.roomId) {
+    pendingChatFocus = null;
+    return;
+  }
+  const chatInput = document.querySelector('#chatForm [name="message"]');
+  if (!chatInput || chatInput.disabled) {
+    pendingChatFocus = null;
+    return;
+  }
+  chatInput.focus();
+  const start = Math.min(pendingChatFocus.start ?? chatInput.value.length, chatInput.value.length);
+  const end = Math.min(pendingChatFocus.end ?? start, chatInput.value.length);
+  chatInput.setSelectionRange?.(start, end);
+  pendingChatFocus = null;
+}
+
+function currentChatDraft() {
+  return online?.roomId ? (chatDraftByRoom.get(online.roomId) || '') : '';
+}
+
+function setCurrentChatDraft(value) {
+  if (online?.roomId) chatDraftByRoom.set(online.roomId, value);
+}
+
 function loadOnlineSession() {
   const raw = localStorage.getItem('universitySplendorOnlineSession');
   if (!raw) return null;
@@ -81,12 +166,15 @@ function saveOnlineSession() {
 }
 
 function clearOnlineSession() {
+  const roomId = online?.roomId;
   online?.eventSource?.close?.();
   if (online?.pollTimer) clearInterval(online.pollTimer);
   if (online?.exitTimer) clearTimeout(online.exitTimer);
+  if (roomId) chatDraftByRoom.delete(roomId);
   online = null;
   localStorage.removeItem('universitySplendorOnlineSession');
 }
+
 
 async function api(path, options = {}) {
   const { timeoutMs = 15000, ...fetchOptions } = options;
@@ -346,6 +434,7 @@ async function sendChatMessage(event) {
       body: JSON.stringify({ clientToken: online.clientToken, message }),
     });
     if (input) input.value = '';
+    setCurrentChatDraft('');
     applyOnlineRoom(data.room);
   } catch (error) {
     lastError = error.message || String(error);
@@ -439,6 +528,7 @@ function resetGame() {
 }
 
 function render() {
+  captureTransientInputs();
   if (isOnline() && !online.room) {
     renderSetup();
     return;
@@ -507,6 +597,7 @@ function render() {
     </main>
   `;
   bindEvents();
+  restoreTransientInputs();
 }
 
 function renderSetup() {
@@ -529,6 +620,7 @@ function renderSetup() {
     </main>
   `;
   bindSetupEvents(saved);
+  restoreTransientInputs();
 }
 
 function renderLocalSetup(saved) {
@@ -562,37 +654,38 @@ function renderLocalSetup(saved) {
 }
 
 function renderOnlineLobby() {
+  const draft = onlineLobbyDraft;
   return `
     <section class="mode-panel online-lobby">
-      <h2>线上多人游玩</h2>
-      <p class="muted">当前网页会连接线上房间服务。创建房间后，把本页面地址或房间号发给朋友；朋友选择「线上多人房间」即可看到并加入。只有本地开发预览时才需要 <code>npm run serve</code> 或 <code>node server.js</code>。</p>
+      <h2>\u7ebf\u4e0a\u591a\u4eba\u6e38\u73a9</h2>
+      <p class="muted">\u5f53\u524d\u7f51\u9875\u4f1a\u8fde\u63a5\u7ebf\u4e0a\u623f\u95f4\u670d\u52a1\u3002\u521b\u5efa\u623f\u95f4\u540e\uff0c\u628a\u672c\u9875\u9762\u5730\u5740\u6216\u623f\u95f4\u53f7\u53d1\u7ed9\u670b\u53cb\uff1b\u670b\u53cb\u9009\u62e9\u300c\u7ebf\u4e0a\u591a\u4eba\u623f\u95f4\u300d\u5373\u53ef\u770b\u5230\u5e76\u52a0\u5165\u3002\u53ea\u6709\u672c\u5730\u5f00\u53d1\u9884\u89c8\u65f6\u624d\u9700\u8981 <code>npm run serve</code> \u6216 <code>node server.js</code>\u3002</p>
       <div class="online-grid">
         <form id="createRoomForm" class="sub-card">
-          <h3>创建房间</h3>
-          <label>房间名称 <input name="roomName" maxlength="24" value="我的房间" /></label>
-          <label>你的名称 <input name="playerName" maxlength="18" value="玩家1" /></label>
-          <label>房间人数
+          <h3>\u521b\u5efa\u623f\u95f4</h3>
+          <label>\u623f\u95f4\u540d\u79f0 <input name="roomName" maxlength="24" value="${escapeHtml(draft.roomName)}" /></label>
+          <label>\u4f60\u7684\u540d\u79f0 <input name="playerName" maxlength="18" value="${escapeHtml(draft.playerName)}" /></label>
+          <label>\u623f\u95f4\u4eba\u6570
             <select name="playerCount">
-              <option value="2">2 人</option>
-              <option value="3">3 人</option>
-              <option value="4">4 人</option>
+              <option value="2" ${draft.playerCount === '2' ? 'selected' : ''}>2 \u4eba</option>
+              <option value="3" ${draft.playerCount === '3' ? 'selected' : ''}>3 \u4eba</option>
+              <option value="4" ${draft.playerCount === '4' ? 'selected' : ''}>4 \u4eba</option>
             </select>
           </label>
-          <label>先手规则
+          <label>\u5148\u624b\u89c4\u5219
             <select name="firstMode">
-              <option value="host">房主先手</option>
-              <option value="random">随机先手</option>
+              <option value="host" ${draft.firstMode === 'host' ? 'selected' : ''}>\u623f\u4e3b\u5148\u624b</option>
+              <option value="random" ${draft.firstMode === 'random' ? 'selected' : ''}>\u968f\u673a\u5148\u624b</option>
             </select>
           </label>
-          <button class="primary wide" type="submit">创建线上房间</button>
+          <button class="primary wide" type="submit">\u521b\u5efa\u7ebf\u4e0a\u623f\u95f4</button>
         </form>
         <div class="sub-card">
           <div class="room-list-title">
-            <h3>已有房间</h3>
-            <button id="refreshRoomsBtn" type="button">${roomsLoading ? '刷新中...' : '刷新'}</button>
+            <h3>\u5df2\u6709\u623f\u95f4</h3>
+            <button id="refreshRoomsBtn" type="button">${roomsLoading ? '\u5237\u65b0\u4e2d...' : '\u5237\u65b0'}</button>
           </div>
           <div class="rooms">
-            ${rooms.length ? rooms.map(renderRoomListItem).join('') : `<p class="muted">暂无房间。点击刷新，或自己创建一个房间。</p>`}
+            ${rooms.length ? rooms.map(renderRoomListItem).join('') : `<p class="muted">\u6682\u65e0\u623f\u95f4\u3002\u70b9\u51fb\u5237\u65b0\uff0c\u6216\u81ea\u5df1\u521b\u5efa\u4e00\u4e2a\u623f\u95f4\u3002</p>`}
           </div>
         </div>
       </div>
@@ -629,7 +722,10 @@ function bindSetupEvents(saved) {
     if (setupMode === 'online') refreshRooms();
     else render();
   }));
-  document.querySelector('#createRoomForm')?.addEventListener('submit', createOnlineRoom);
+  const createRoomForm = document.querySelector('#createRoomForm');
+  createRoomForm?.addEventListener('input', () => updateOnlineLobbyDraftFromForm(createRoomForm));
+  createRoomForm?.addEventListener('change', () => updateOnlineLobbyDraftFromForm(createRoomForm));
+  createRoomForm?.addEventListener('submit', createOnlineRoom);
   document.querySelector('#refreshRoomsBtn')?.addEventListener('click', refreshRooms);
   document.querySelectorAll('[data-join-room]').forEach((btn) => btn.addEventListener('click', () => joinOnlineRoom(btn.dataset.joinRoom)));
 
@@ -708,6 +804,7 @@ function renderOnlineRoom() {
     </main>
   `;
   bindEvents();
+  restoreTransientInputs();
 }
 
 
@@ -751,7 +848,7 @@ function renderChatPanel() {
         `).join('') : '<p class="muted">暂无聊天消息。</p>'}
       </div>
       <form id="chatForm" class="chat-form">
-        <input name="message" maxlength="300" autocomplete="off" placeholder="输入消息，回车发送" ${canChat ? '' : 'disabled'} />
+        <input name="message" maxlength="300" autocomplete="off" placeholder="\u8f93\u5165\u6d88\u606f\uff0c\u56de\u8f66\u53d1\u9001" value="${escapeHtml(currentChatDraft())}" ${canChat ? '' : 'disabled'} />
         <button type="submit" ${canChat ? '' : 'disabled'}>发送</button>
       </form>
     </section>
@@ -1065,6 +1162,8 @@ function bindEvents() {
   document.querySelector('#startOnlineBtn')?.addEventListener('click', startOnlineRoom);
   document.querySelector('#readyOnlineBtn')?.addEventListener('click', (event) => setOnlineReady(event.currentTarget.dataset.ready === 'true'));
   document.querySelectorAll('[data-kick-player]').forEach((btn) => btn.addEventListener('click', () => kickOnlinePlayer(Number(btn.dataset.kickPlayer))));
+  const chatInput = document.querySelector('#chatForm [name="message"]');
+  chatInput?.addEventListener('input', () => setCurrentChatDraft(chatInput.value));
   document.querySelector('#chatForm')?.addEventListener('submit', sendChatMessage);
   document.querySelector('#copyRoomBtn')?.addEventListener('click', async () => {
     const text = `${location.origin}${location.pathname} 房间号：${online?.room?.id || online?.roomId || ''}`;
