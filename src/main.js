@@ -1116,7 +1116,7 @@ function renderOpportunityCatalog() {
   const total = catalogTotal(OPPORTUNITY_TEMPLATES);
   return `
     <section class="catalog-section catalog-section-full">
-      <h3>\u673a\u9047\u5361\uff08${OPPORTUNITY_TEMPLATES.length} \u79cd / ${total} \u5f20\uff0c\u62bd\u7a7a\u540e\u91cd\u7ec4\uff09</h3>
+      <h3>\u673a\u9047\u5361\uff08${OPPORTUNITY_TEMPLATES.length} \u79cd / ${total} \u5f20\uff0c\u6709\u653e\u56de\u62bd\u53d6\uff09</h3>
       ${renderCatalogSummary(OPPORTUNITY_TEMPLATES)}
       <div class="catalog-table-wrap">
         <table class="catalog-table">
