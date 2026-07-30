@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createGame, totalTokens } from '../src/game.js';
 import { TOKEN_LIMIT } from '../src/data.js';
-import { chooseAIAction, hydrateAIPlayers, runAIActions } from '../src/ai.js';
+import { applyAIAction, chooseAIAction, hydrateAIPlayers, runAIActions } from '../src/ai.js';
 
 function deterministicGame(playerCount = 2) {
   return createGame({ playerCount, firstPlayerIndex: 0, rng: () => 0.42 });
@@ -100,6 +100,31 @@ function testStrategicAIPrereservesVisibleCardInsteadOfTakingMoreNearTokenLimit(
   }
 }
 
+
+function testAIApplyBuyUsesProvidedRandomForOpportunityDraw() {
+  const first = deterministicGame(2);
+  const firstCard = {
+    instanceId: 'AI_SCORE_FIRST',
+    templateId: 'AI_SCORE_FIRST',
+    name: 'AI score first',
+    level: 1,
+    attribute: 'e',
+    cost: { e: 3 },
+    happiness: 1,
+  };
+  first.market.level1[0] = firstCard;
+  first.players[0].tokens.e = 3;
+  const firstResult = applyAIAction(first, { type: 'buyCard', payload: { instanceId: firstCard.instanceId, optionIndex: 0 }, card: firstCard, source: 'market', level: 1 }, () => 0);
+  assert.equal(firstResult.opportunity.card.templateId, 'O_001');
+
+  const last = deterministicGame(2);
+  const lastCard = { ...firstCard, instanceId: 'AI_SCORE_LAST', templateId: 'AI_SCORE_LAST' };
+  last.market.level1[0] = lastCard;
+  last.players[0].tokens.e = 3;
+  const lastResult = applyAIAction(last, { type: 'buyCard', payload: { instanceId: lastCard.instanceId, optionIndex: 0 }, card: lastCard, source: 'market', level: 1 }, () => 0.99);
+  assert.equal(lastResult.opportunity.card.templateId, 'O_005');
+}
+
 function testAIDiscardReturnsToLimit() {
   const game = deterministicGame(2);
   hydrateAIPlayers(game, [{ index: 0, aiLevel: 'fable' }]);
@@ -118,6 +143,7 @@ testHaikuNeverReserves();
 testStrategicAIPrefersTokensOverOpeningReserve();
 testStrategicAIBuysWhenNearTokenLimit();
 testStrategicAIPrereservesVisibleCardInsteadOfTakingMoreNearTokenLimit();
+testAIApplyBuyUsesProvidedRandomForOpportunityDraw();
 testAIDiscardReturnsToLimit();
 
 console.log('All AI tests passed.');

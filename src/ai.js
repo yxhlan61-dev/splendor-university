@@ -102,11 +102,11 @@ function cloneGame(game) {
   return JSON.parse(JSON.stringify(game));
 }
 
-function safeApply(game, action) {
+function safeApply(game, action, rng = Math.random) {
   try {
     switch (action.type) {
       case 'buyCard':
-        return buyCard(game, action.payload.instanceId, action.payload.optionIndex || 0, () => 0.42);
+        return buyCard(game, action.payload.instanceId, action.payload.optionIndex || 0, rng);
       case 'reserveMarket':
         reserveMarketCard(game, action.payload.level, action.payload.instanceId);
         return null;
@@ -373,7 +373,7 @@ function scoreAction(game, playerIndex, action, level) {
 
   if (level === 'fable') {
     const sim = cloneGame(game);
-    safeApply(sim, action);
+    safeApply(sim, action, () => 0.42);
     score += evaluateGameForPlayer(sim, playerIndex, 'fable') * 0.18;
   }
   return score;
@@ -457,24 +457,24 @@ export function chooseAIAction(game, playerIndex = game.currentPlayerIndex) {
   return chooseStrategic(game, playerIndex, level);
 }
 
-export function applyAIAction(game, action) {
+export function applyAIAction(game, action, rng = Math.random) {
   if (!action) return null;
-  return safeApply(game, action);
+  return safeApply(game, action, rng);
 }
 
-export function runNextAIAction(game) {
+export function runNextAIAction(game, rng = Math.random) {
   const playerIndex = game?.phase === 'discard_tokens' ? game.pendingDiscardPlayerIndex : game?.currentPlayerIndex;
   if (!Number.isInteger(playerIndex)) return null;
   const action = chooseAIAction(game, playerIndex);
   if (!action) return null;
-  const result = applyAIAction(game, action);
+  const result = applyAIAction(game, action, rng);
   return { action, result, playerIndex };
 }
 
-export function runAIActions(game, { maxActions = 60, onAction = null } = {}) {
+export function runAIActions(game, { maxActions = 60, onAction = null, rng = Math.random } = {}) {
   const results = [];
   for (let step = 0; step < maxActions; step += 1) {
-    const item = runNextAIAction(game);
+    const item = runNextAIAction(game, rng);
     if (!item) break;
     results.push(item);
     onAction?.(item);
