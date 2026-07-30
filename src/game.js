@@ -507,14 +507,14 @@ function completeTurn(game) {
     if (!game.endgameTriggered && player.happiness >= WINNING_HAPPINESS) {
       game.endgameTriggered = true;
       game.endgameTriggeredBy = player.id;
-      log(game, `${player.name} ?? ${player.happiness} ?????????`);
+      log(game, `${player.name} 达到 ${player.happiness} 开心值，触发终局。`);
     }
     player.turnsTaken += 1;
   }
   if (game.endgameTriggered && allTurnsEqual(game)) {
     game.phase = 'game_over';
     game.winners = determineWinners(game);
-    log(game, `????????${game.winners.map((p) => p.name).join('?')}?`);
+    log(game, `游戏结束，胜者：${game.winners.map((p) => p.name).join('、')}。`);
     return;
   }
   const nextIndex = getNextActivePlayerIndex(game, game.currentPlayerIndex);

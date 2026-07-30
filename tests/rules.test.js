@@ -232,9 +232,16 @@ function testDiscardAndEndgame() {
   player.happiness = 14;
   const card = { instanceId: 'score', templateId: 'score', name: '单机游戏', level: 1, attribute: 'e', cost: { e: 3 }, happiness: 1 };
   end.market.level1[0] = card;
-  buyCard(end, card.instanceId);
+  buyCard(end, card.instanceId, 0, () => 0);
   assert.equal(end.endgameTriggered, true);
   assert.equal(end.phase, 'player_action');
+  assert.equal(end.log[0].includes('\u8fbe\u5230 15 \u5f00\u5fc3\u503c\uff0c\u89e6\u53d1\u7ec8\u5c40\u3002'), true);
+  assert.doesNotMatch(end.log[0], /\?{2,}/);
+
+  takeDifferent(end, ['a', 'b', 'c']);
+  assert.equal(end.phase, 'game_over');
+  assert.equal(end.log[0].includes('\u6e38\u620f\u7ed3\u675f\uff0c\u80dc\u8005\uff1a'), true);
+  assert.doesNotMatch(end.log[0], /\?{2,}/);
 }
 
 testInit();
