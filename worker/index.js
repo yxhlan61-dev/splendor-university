@@ -194,6 +194,7 @@ export class GameLobby {
     this.env = env;
     this.rooms = new Map();
     this.subscribers = new Map();
+    this.aiTimers = new Map();
     this.ready = this.load();
   }
 
@@ -276,7 +277,7 @@ export class GameLobby {
         if (client) delete room.clients[seat.clientId];
         seat.clientId = null;
         seat.aiLevel = null;
-        seat.name = `Waiting Player ${seat.index + 1}`;
+        seat.name = `等待玩家${seat.index + 1}`;
         changed = true;
       }
     }
@@ -380,6 +381,29 @@ export class GameLobby {
     if (!list?.size) return;
     for (const sub of [...list]) this.queueSubscriberWrite(room, sub);
   }
+
+  isRoomAITurn(room) {
+    const game = room?.game;
+    if (!game || room.status !== 'playing' || game.phase === 'game_over') return false;
+    const index = game.phase === 'discard_tokens' ? game.pendingDiscardPlayerIndex : game.currentPlayerIndex;
+    return Number.isInteger(index) && game.players?.[index]?.active !== false && game.players?.[index]?.isAI;
+  }
+
+  scheduleRoomAI(room, delay = 5000) {
+    if (!room?.id || !this.isRoomAITurn(room) || this.aiTimers.has(room.id)) return;
+    const timer = setTimeout(async () => {
+      this.aiTimers.delete(room.id);
+      const liveRoom = this.rooms.get(room.id);
+      if (!liveRoom || !this.isRoomAITurn(liveRoom)) return;
+      runRoomAI(liveRoom, { maxActions: 1 });
+      if (liveRoom.game?.phase === 'game_over') liveRoom.status = 'game_over';
+      touch(liveRoom);
+      await this.save();
+      this.broadcast(liveRoom);
+      if (liveRoom.status === 'playing' && this.isRoomAITurn(liveRoom)) this.scheduleRoomAI(liveRoom, 5000);
+    }, delay);
+    this.aiTimers.set(room.id, timer);
+  }
   ensureRoom(id) {
     const room = this.rooms.get(String(id || '').toUpperCase());
     if (!room) throw new Error('房间不存在或已过期');
@@ -402,25 +426,20 @@ export class GameLobby {
 
   createRoom(body) {
     const playerCount = Number(body.playerCount || 2);
-    if (![2, 3, 4].includes(playerCount)) throw new Error('Online rooms must have 2-4 players');
+    if (![2, 3, 4].includes(playerCount)) throw new Error('\u7ebf\u4e0a\u623f\u95f4\u4eba\u6570\u5fc5\u987b\u4e3a 2-4 \u4eba');
     const id = randomId('R').slice(0, 8);
     const hostClientId = randomId('C');
-    const hostName = sanitizeName(body.playerName, '??');
+    const hostName = sanitizeName(body.playerName, '\u623f\u4e3b');
     const now = new Date().toISOString();
-    const aiSeats = Array.isArray(body.aiSeats) ? body.aiSeats : [];
-    const aiByIndex = new Map(aiSeats.map((seat) => [Number(seat.index), normalizeAILevel(seat.aiLevel || seat.level)]));
-    const seats = Array.from({ length: playerCount }, (_, index) => {
-      const aiLevel = index === 0 ? null : aiByIndex.get(index);
-      if (aiLevel) return { index, name: aiDisplayName(aiLevel), clientId: makeAIClientId(index), aiLevel };
-      return {
-        index,
-        name: index === 0 ? hostName : `Waiting Player ${index + 1}`,
-        clientId: index === 0 ? hostClientId : null,
-      };
-    });
+    const seats = Array.from({ length: playerCount }, (_, index) => ({
+      index,
+      name: index === 0 ? hostName : `等待玩家${index + 1}`,
+      clientId: index === 0 ? hostClientId : null,
+      aiLevel: null,
+    }));
     const room = {
       id,
-      name: sanitizeName(body.roomName, `${hostName}???`, 24),
+      name: sanitizeName(body.roomName, `${hostName}\u7684\u623f\u95f4`, 24),
       status: 'waiting',
       playerCount,
       firstMode: body.firstMode === 'random' ? 'random' : 'host',
@@ -444,20 +463,6 @@ export class GameLobby {
       notices: [],
       flash: null,
     };
-
-    for (const seat of seats.filter(isAISeat)) {
-      room.clients[seat.clientId] = {
-        clientId: seat.clientId,
-        playerIndex: seat.index,
-        playerName: seat.name,
-        spectator: false,
-        ready: true,
-        connected: true,
-        lastSeen: Date.now(),
-        isAI: true,
-        aiLevel: seat.aiLevel,
-      };
-    }
     this.rooms.set(id, room);
     return { room, clientToken: hostClientId };
   }
@@ -534,7 +539,7 @@ export class GameLobby {
     if (room.game.currentPlayerIndex === client.playerIndex || room.game.players?.[room.game.currentPlayerIndex]?.active === false) {
       advanceToNextActivePlayer(room.game, client.playerIndex);
     }
-    runRoomAI(room);
+    this.scheduleRoomAI(room);
     if (room.game.phase === 'game_over') room.status = 'game_over';
   }
 
@@ -546,7 +551,7 @@ export class GameLobby {
       if (seat?.clientId === clientToken) {
         seat.clientId = null;
         seat.aiLevel = null;
-        seat.name = `Waiting Player ${seat.index + 1}`;
+        seat.name = `等待玩家${seat.index + 1}`;
       }
       delete room.clients[clientToken];
       if (clientToken === room.hostClientId) {
@@ -581,6 +586,36 @@ export class GameLobby {
     touch(room);
   }
 
+
+  addAIPlayer(room, hostToken, playerIndex, aiLevel) {
+    const host = this.ensureClient(room, hostToken);
+    if (host.clientId !== room.hostClientId) throw new Error('\u53ea\u6709\u623f\u4e3b\u53ef\u4ee5\u52a0\u5165\u7535\u8111\u73a9\u5bb6');
+    if (room.status !== 'waiting') throw new Error('\u53ea\u6709\u7b49\u5f85\u754c\u9762\u53ef\u4ee5\u52a0\u5165\u7535\u8111\u73a9\u5bb6');
+    const index = Number(playerIndex);
+    const seat = room.seats[index];
+    if (!seat) throw new Error('座位不存在');
+    if (index === 0 || seat.clientId === room.hostClientId) throw new Error('\u623f\u4e3b\u5ea7\u4f4d\u4e0d\u80fd\u52a0\u5165\u7535\u8111');
+    if (seat.clientId) throw new Error('该座位已经有玩家');
+    const level = normalizeAILevel(aiLevel);
+    const clientId = makeAIClientId(index);
+    seat.clientId = clientId;
+    seat.aiLevel = level;
+    seat.name = aiDisplayName(level);
+    room.clients[clientId] = {
+      clientId,
+      playerIndex: index,
+      playerName: seat.name,
+      spectator: false,
+      ready: true,
+      connected: true,
+      lastSeen: Date.now(),
+      isAI: true,
+      aiLevel: level,
+    };
+    addNotice(room, 'ai_added', `${seat.name} 已加入座位 ${index + 1}。`);
+    touch(room);
+  }
+
   kickPlayer(room, hostToken, playerIndex) {
     const host = this.ensureClient(room, hostToken);
     if (host.clientId !== room.hostClientId) throw new Error('只有房主可以踢出玩家');
@@ -593,7 +628,7 @@ export class GameLobby {
     delete room.clients[seat.clientId];
     seat.clientId = null;
     seat.aiLevel = null;
-    seat.name = `Waiting Player ${seat.index + 1}`;
+    seat.name = `等待玩家${seat.index + 1}`;
     addNotice(room, 'player_kicked', `${kickedName} 已被房主移出房间。`);
     touch(room);
   }
@@ -611,8 +646,8 @@ export class GameLobby {
     if (room.status === 'playing' && room.game) return;
     if (room.status !== 'waiting') throw new Error('房间已经结束');
     const { missing, unready } = readyState(room);
-    if (missing.length) throw new Error('请等待所有座位坐满后再开始');
-    if (unready.length) throw new Error('除房主外的所有玩家都准备后才能开始');
+    if (missing.length) throw new Error('\u8bf7\u7b49\u5f85\u6240\u6709\u5ea7\u4f4d\u5750\u6ee1\u540e\u518d\u5f00\u59cb\uff0c\u623f\u4e3b\u4e5f\u53ef\u4ee5\u5728\u7a7a\u5ea7\u4f4d\u52a0\u5165\u7535\u8111\u73a9\u5bb6');
+    if (unready.length) throw new Error('\u9664\u623f\u4e3b\u548c \u7535\u8111\u5916\u7684\u6240\u6709\u73a9\u5bb6\u90fd\u51c6\u5907\u540e\u624d\u80fd\u5f00\u59cb');
     const firstPlayerIndex = room.firstMode === 'random' ? Math.floor(Math.random() * room.playerCount) : 0;
     room.game = hydrateAIPlayers(createGame({
       playerCount: room.playerCount,
@@ -622,13 +657,13 @@ export class GameLobby {
     room.status = 'playing';
     room.flash = null;
     addNotice(room, 'game_started', '游戏已开始，祝大家玩得开心。');
-    runRoomAI(room);
+    this.scheduleRoomAI(room);
     touch(room);
   }
 
   assertPlayerTurn(room, client) {
     if (!room.game || room.status !== 'playing') throw new Error('房间尚未开始游戏');
-    if (client.isAI) throw new Error('AI players act automatically');
+    if (client.isAI) throw new Error('\u7535\u8111\u73a9\u5bb6\u4f1a\u81ea\u52a8\u884c\u52a8');
     if (client.spectator || client.playerIndex === null) throw new Error('观战者不能执行游戏动作');
     const game = room.game;
     if (game.phase === 'player_action' && game.currentPlayerIndex !== client.playerIndex) throw new Error('还没有轮到你行动');
@@ -671,7 +706,7 @@ export class GameLobby {
       default:
         throw new Error('未知线上动作');
     }
-    runRoomAI(room);
+    this.scheduleRoomAI(room);
     if (room.game.phase === 'game_over') room.status = 'game_over';
     touch(room);
     return result;
@@ -766,6 +801,14 @@ export class GameLobby {
         if (request.method === 'POST' && parts[3] === 'ready') {
           const body = await readBody(request);
           this.setReady(room, body.clientToken, body.ready);
+          await this.save();
+          this.broadcast(room);
+          return json(200, { room: publicRoom(room, body.clientToken) });
+        }
+
+        if (request.method === 'POST' && parts[3] === 'ai') {
+          const body = await readBody(request);
+          this.addAIPlayer(room, body.clientToken, body.playerIndex, body.aiLevel || body.level);
           await this.save();
           this.broadcast(room);
           return json(200, { room: publicRoom(room, body.clientToken) });

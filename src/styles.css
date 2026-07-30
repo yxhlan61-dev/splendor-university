@@ -573,6 +573,22 @@ code { background: #e2e8f0; border-radius: 6px; padding: 1px 5px; }
 .seat-card .seat-kick {
   margin-top: 8px;
 }
+
+.seat-ai-add {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.seat-ai-add label {
+  display: grid;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 800;
+}
+.seat-ai-add select,
+.seat-ai-add button {
+  width: 100%;
+}
 .ready-hint {
   text-align: center;
   font-weight: 800;
