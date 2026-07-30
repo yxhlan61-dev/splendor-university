@@ -12,6 +12,7 @@ import {
   takeSame,
   totalTokens,
 } from './game.js';
+import { AI_LEVEL_ORDER, AI_LEVELS, hydrateAIPlayers, isAIPlayer, makeAIPlayerName, runAIActions } from './ai.js';
 import { GAME_VERSION, LEVEL1_TEMPLATES, LEVEL2_TEMPLATES, MARKET_SIZE, OPPORTUNITY_TEMPLATES, RESERVE_LIMIT, TASK_INFO, TASK_TYPES, TOKEN_LIMIT, TOKEN_TYPES } from './data.js';
 
 let game = null;
@@ -29,6 +30,8 @@ let joiningRoomId = null;
 let online = loadOnlineSession();
 
 let onlineLobbyDraft = loadOnlineLobbyDraft();
+let localAIAdvanceTimer = null;
+let localAIAdvancing = false;
 const chatDraftByRoom = new Map();
 let pendingChatFocus = null;
 
@@ -54,6 +57,94 @@ function isOnlineActionTurn() {
   return false;
 }
 
+
+function isCurrentTurnAI() {
+  if (!game || isOnline()) return false;
+  const index = game.phase === 'discard_tokens' ? game.pendingDiscardPlayerIndex : game.currentPlayerIndex;
+  return Number.isInteger(index) && isAIPlayer(game.players[index]);
+}
+
+function stopLocalAIQueue() {
+  if (localAIAdvanceTimer) clearTimeout(localAIAdvanceTimer);
+  localAIAdvanceTimer = null;
+  localAIAdvancing = false;
+}
+
+function scheduleLocalAIQueue(delay = 450) {
+  if (!game || isOnline() || localAIAdvancing || localAIAdvanceTimer) return;
+  if (!isCurrentTurnAI() || game.phase === 'game_over') return;
+  localAIAdvanceTimer = setTimeout(() => {
+    localAIAdvanceTimer = null;
+    advanceLocalAIQueue();
+  }, delay);
+}
+
+function advanceLocalAIQueue() {
+  if (!game || isOnline() || localAIAdvancing) return;
+  localAIAdvancing = true;
+  try {
+    const results = runAIActions(game, {
+      maxActions: 1,
+      onAction: ({ result }) => {
+        const draw = result?.opportunity;
+        const message = draw?.result?.message || '';
+        if (draw?.card && message) showOpportunityAnimation(draw.card, message);
+      },
+    });
+    if (results.length) {
+      selectedDifferent.clear();
+      selectedSame = null;
+      save();
+    }
+  } catch (error) {
+    lastError = `AI action failed: ${error.message || error}`;
+  } finally {
+    localAIAdvancing = false;
+  }
+  render();
+}
+
+function aiSeatFromForm(form, index) {
+  const seatType = form.get(`seat${index + 1}Type`) === 'ai' ? 'ai' : 'human';
+  const aiLevel = AI_LEVELS[form.get(`seat${index + 1}AI`)] ? form.get(`seat${index + 1}AI`) : 'haiku';
+  return { seatType, aiLevel };
+}
+
+
+function normalizeOnlineAISeats(aiSeats = []) {
+  if (!Array.isArray(aiSeats)) return [];
+  return aiSeats
+    .map((seat) => ({ index: Number(seat.index), aiLevel: AI_LEVELS[seat.aiLevel] ? seat.aiLevel : 'haiku' }))
+    .filter((seat) => Number.isInteger(seat.index) && seat.index >= 1 && seat.index <= 3);
+}
+
+function collectOnlineAISeats(form) {
+  if (!form) return [];
+  const data = new FormData(form);
+  const playerCount = Number(data.get('playerCount') || onlineLobbyDraft.playerCount || 2);
+  const aiSeats = [];
+  for (let index = 1; index < playerCount; index += 1) {
+    if (data.get(`onlineSeat${index + 1}Type`) === 'ai') {
+      const aiLevel = AI_LEVELS[data.get(`onlineSeat${index + 1}AI`)] ? data.get(`onlineSeat${index + 1}AI`) : 'haiku';
+      aiSeats.push({ index, aiLevel });
+    }
+  }
+  return aiSeats;
+}
+
+function isOnlineAISeatSelected(index) {
+  return onlineLobbyDraft.aiSeats?.some((seat) => seat.index === index);
+}
+
+function onlineAILevelForSeat(index) {
+  return onlineLobbyDraft.aiSeats?.find((seat) => seat.index === index)?.aiLevel || 'haiku';
+}
+
+function formatAISeatLabel(level) {
+  const normalized = AI_LEVELS[level] ? level : 'haiku';
+  return `${AI_LEVELS[normalized].name} AI`;
+}
+
 function save() {
   if (game && !isOnline()) localStorage.setItem('universitySplendorGame', JSON.stringify(game));
 }
@@ -75,6 +166,7 @@ function defaultOnlineLobbyDraft() {
     playerName: '\u73a9\u5bb61',
     playerCount: '2',
     firstMode: 'host',
+    aiSeats: [],
   };
 }
 
@@ -89,6 +181,7 @@ function loadOnlineLobbyDraft() {
       playerName: String(saved?.playerName || defaults.playerName),
       playerCount: ['2', '3', '4'].includes(String(saved?.playerCount)) ? String(saved.playerCount) : defaults.playerCount,
       firstMode: saved?.firstMode === 'random' ? 'random' : defaults.firstMode,
+      aiSeats: normalizeOnlineAISeats(saved?.aiSeats),
     };
   } catch {
     return defaults;
@@ -107,6 +200,7 @@ function updateOnlineLobbyDraftFromForm(form) {
     playerName: String(data.get('playerName') || ''),
     playerCount: String(data.get('playerCount') || '2'),
     firstMode: data.get('firstMode') === 'random' ? 'random' : 'host',
+    aiSeats: collectOnlineAISeats(form),
   };
   saveOnlineLobbyDraft();
 }
@@ -336,6 +430,7 @@ async function createOnlineRoom(event) {
         playerName: form.get('playerName'),
         playerCount: Number(form.get('playerCount')),
         firstMode: form.get('firstMode'),
+        aiSeats: collectOnlineAISeats(event.currentTarget),
       }),
     });
     online = { roomId: data.room.id, clientToken: data.clientToken, room: data.room, connected: true, eventSource: null, pollTimer: null, exitTimer: null, lastFlashId: null, lastNoticeId: null };
@@ -475,6 +570,7 @@ function leaveOnlineRoom() {
     }).catch(() => {});
   }
   clearOnlineSession();
+  stopLocalAIQueue();
   game = null;
   selectedDifferent.clear();
   selectedSame = null;
@@ -509,10 +605,18 @@ function startGame(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const playerCount = Number(form.get('playerCount'));
-  const names = Array.from({ length: playerCount }, (_, i) => form.get(`p${i + 1}`)?.trim() || `玩家${i + 1}`);
+  const aiSeats = [];
+  const names = Array.from({ length: playerCount }, (_, i) => {
+    const seat = aiSeatFromForm(form, i);
+    if (seat.seatType === 'ai') {
+      aiSeats.push({ index: i, aiLevel: seat.aiLevel });
+      return makeAIPlayerName(seat.aiLevel);
+    }
+    return form.get(`p${i + 1}`)?.trim() || `Player${i + 1}`;
+  });
   const firstMode = form.get('firstMode');
   const firstPlayerIndex = firstMode === 'random' ? Math.floor(Math.random() * playerCount) : Number(form.get('firstPlayerIndex'));
-  game = createGame({ playerCount, playerNames: names, firstPlayerIndex });
+  game = hydrateAIPlayers(createGame({ playerCount, playerNames: names, firstPlayerIndex }), aiSeats);
   opportunityAnimation = null;
   gameOverDismissed = false;
   rulesOpen = false;
@@ -529,6 +633,7 @@ function resetGame() {
     return;
   }
   if (!confirm('确定要重新开始并清除当前进度吗？')) return;
+  stopLocalAIQueue();
   game = null;
   opportunityAnimation = null;
   gameOverDismissed = false;
@@ -613,9 +718,11 @@ function render() {
   `;
   bindEvents();
   restoreTransientInputs();
+  scheduleLocalAIQueue();
 }
 
 function renderSetup() {
+  stopLocalAIQueue();
   const saved = load();
   app.innerHTML = `
     ${renderRulesModal()}
@@ -638,6 +745,28 @@ function renderSetup() {
   `;
   bindSetupEvents(saved);
   restoreTransientInputs();
+}
+
+
+function renderAILevelOptions(selected = 'haiku') {
+  return AI_LEVEL_ORDER.map((level) => `<option value="${level}" ${selected === level ? 'selected' : ''}>${AI_LEVELS[level].label}</option>`).join('');
+}
+
+function renderLocalSeatFields(count) {
+  return Array.from({ length: count }, (_, i) => `
+    <div class="seat-setup" data-seat-setup="${i + 1}">
+      <label>Seat ${i + 1} Type
+        <select name="seat${i + 1}Type" data-seat-type="${i + 1}">
+          <option value="human">Human</option>
+          <option value="ai">AI Player</option>
+        </select>
+      </label>
+      <label class="human-name" data-human-name="${i + 1}">Player ${i + 1} Name <input name="p${i + 1}" value="Player${i + 1}" /></label>
+      <label class="ai-level" data-ai-level-wrap="${i + 1}" style="display:none">AI Level
+        <select name="seat${i + 1}AI">${renderAILevelOptions()}</select>
+      </label>
+    </div>
+  `).join('');
 }
 
 function renderLocalSetup(saved) {
@@ -670,6 +799,51 @@ function renderLocalSetup(saved) {
   `;
 }
 
+
+function renderOnlineAISeatFields(playerCount) {
+  return Array.from({ length: Math.max(0, playerCount - 1) }, (_, offset) => {
+    const index = offset + 1;
+    const selectedAI = isOnlineAISeatSelected(index);
+    const level = onlineAILevelForSeat(index);
+    return `
+      <div class="seat-setup compact" data-online-seat-setup="${index + 1}">
+        <label>Seat ${index + 1}
+          <select name="onlineSeat${index + 1}Type" data-online-seat-type="${index + 1}">
+            <option value="human" ${selectedAI ? '' : 'selected'}>Wait for human</option>
+            <option value="ai" ${selectedAI ? 'selected' : ''}>AI Player</option>
+          </select>
+        </label>
+        <label class="ai-level" data-online-ai-level-wrap="${index + 1}" style="display:${selectedAI ? 'grid' : 'none'}">AI Level
+          <select name="onlineSeat${index + 1}AI">${renderAILevelOptions(level)}</select>
+        </label>
+      </div>
+    `;
+  }).join('');
+}
+
+function bindOnlineAISeatControls() {
+  const form = document.querySelector('#createRoomForm');
+  const playerCountSelect = form?.querySelector('[name="playerCount"]');
+  const fields = document.querySelector('#onlineAISeatFields');
+  const refresh = () => {
+    updateOnlineLobbyDraftFromForm(form);
+    if (fields && playerCountSelect) fields.innerHTML = renderOnlineAISeatFields(Number(playerCountSelect.value || 2));
+    bindOnlineAISeatControls();
+  };
+  playerCountSelect?.addEventListener('change', refresh, { once: true });
+  document.querySelectorAll('[data-online-seat-type]').forEach((select) => {
+    const apply = () => {
+      const seat = select.dataset.onlineSeatType;
+      const wrap = document.querySelector(`[data-online-ai-level-wrap="${seat}"]`);
+      if (wrap) wrap.style.display = select.value === 'ai' ? 'grid' : 'none';
+      updateOnlineLobbyDraftFromForm(form);
+    };
+    select.addEventListener('change', apply);
+    apply();
+  });
+  document.querySelectorAll('#onlineAISeatFields select').forEach((select) => select.addEventListener('change', () => updateOnlineLobbyDraftFromForm(form)));
+}
+
 function renderOnlineLobby() {
   const draft = onlineLobbyDraft;
   return `
@@ -694,6 +868,8 @@ function renderOnlineLobby() {
               <option value="random" ${draft.firstMode === 'random' ? 'selected' : ''}>\u968f\u673a\u5148\u624b</option>
             </select>
           </label>
+          <div id="onlineAISeatFields" class="ai-seat-fields">${renderOnlineAISeatFields(Number(draft.playerCount || 2))}</div>
+          <p class="muted">Host is always human. Other seats can be filled by human players or AI.</p>
           <button class="primary wide" type="submit">\u521b\u5efa\u7ebf\u4e0a\u623f\u95f4</button>
         </form>
         <div class="sub-card">
@@ -724,12 +900,28 @@ function renderRoomListItem(room) {
       <div>
         <strong>${escapeHtml(room.name)}</strong>
         <p>${escapeHtml(room.id)} &middot; ${statusText} &middot; ${room.occupied}/${room.playerCount} 人</p>
-        <p class="muted">${room.seats.map((seat) => seat.occupied ? escapeHtml(seat.name) : `空位${seat.index + 1}`).join('、')}</p>
+        <p class="muted">${room.seats.map((seat) => seat.occupied ? `${escapeHtml(seat.name)}${seat.isAI ? ' (AI)' : ''}` : `Empty${seat.index + 1}`).join(' / ')}</p>
         <p class="muted room-hint">${escapeHtml(hint)}</p>
       </div>
       <button ${buttonAttrs}>${buttonText}</button>
     </article>
   `;
+}
+
+
+function bindSeatTypeControls() {
+  document.querySelectorAll('[data-seat-type]').forEach((select) => {
+    const apply = () => {
+      const seat = select.dataset.seatType;
+      const ai = select.value === 'ai';
+      const humanWrap = document.querySelector(`[data-human-name="${seat}"]`);
+      const aiWrap = document.querySelector(`[data-ai-level-wrap="${seat}"]`);
+      if (humanWrap) humanWrap.style.display = ai ? 'none' : 'grid';
+      if (aiWrap) aiWrap.style.display = ai ? 'grid' : 'none';
+    };
+    select.addEventListener('change', apply);
+    apply();
+  });
 }
 
 function bindSetupEvents(saved) {
@@ -743,6 +935,7 @@ function bindSetupEvents(saved) {
   createRoomForm?.addEventListener('input', () => updateOnlineLobbyDraftFromForm(createRoomForm));
   createRoomForm?.addEventListener('change', () => updateOnlineLobbyDraftFromForm(createRoomForm));
   createRoomForm?.addEventListener('submit', createOnlineRoom);
+  bindOnlineAISeatControls();
   document.querySelector('#refreshRoomsBtn')?.addEventListener('click', refreshRooms);
   document.querySelectorAll('[data-join-room]').forEach((btn) => btn.addEventListener('click', () => joinOnlineRoom(btn.dataset.joinRoom)));
 
@@ -751,10 +944,9 @@ function bindSetupEvents(saved) {
   if (playerCount && firstMode) {
     const updateFields = () => {
       const count = Number(playerCount.value);
-      document.querySelector('#nameFields').innerHTML = Array.from({ length: count }, (_, i) => `
-        <label>玩家 ${i + 1} 名称 <input name="p${i + 1}" value="玩家${i + 1}" /></label>
-      `).join('');
-      document.querySelector('#firstPlayerIndex').innerHTML = Array.from({ length: count }, (_, i) => `<option value="${i}">玩家${i + 1}</option>`).join('');
+      document.querySelector('#nameFields').innerHTML = renderLocalSeatFields(count);
+      document.querySelector('#firstPlayerIndex').innerHTML = Array.from({ length: count }, (_, i) => `<option value="${i}">Seat ${i + 1}</option>`).join('');
+      bindSeatTypeControls();
     };
     const updateFirst = () => {
       document.querySelector('#firstPlayerWrap').style.display = firstMode.value === 'random' ? 'none' : 'grid';
@@ -809,8 +1001,8 @@ function renderOnlineRoom() {
           ${room.seats.map((seat) => `
             <article class="seat-card ${seat.occupied ? 'occupied' : ''} ${seat.ready ? 'ready' : ''}">
               <h3>\u5ea7\u4f4d ${seat.index + 1}${seat.isHost ? ' · \u623f\u4e3b' : ''}</h3>
-              <p>${seat.occupied ? escapeHtml(seat.name) : '等待加入'}</p>
-              <small>${seat.connected ? '\u5728\u7ebf' : seat.occupied ? '\u6682\u79bb' : '\u7a7a\u4f4d'} · ${seat.isHost ? '\u623f\u4e3b\u65e0\u9700\u51c6\u5907' : seat.occupied ? (seat.ready ? '\u5df2\u51c6\u5907' : '\u672a\u51c6\u5907') : '\u7b49\u5f85\u4e2d'}</small>
+              <p>${seat.occupied ? `${escapeHtml(seat.name)}${seat.isAI ? ' (AI)' : ''}` : 'Waiting'}</p>
+              <small>${seat.isAI ? formatAISeatLabel(seat.aiLevel) : (seat.connected ? 'Online' : seat.occupied ? 'Away' : 'Empty')} &middot; ${seat.isHost ? 'Host ready' : seat.isAI ? 'AI ready' : seat.occupied ? (seat.ready ? 'Ready' : 'Not ready') : 'Waiting'}</small>
               ${viewer?.isHost && seat.occupied && !seat.isHost ? `<button class="danger seat-kick" data-kick-player="${seat.index}">踢出</button>` : ''}
             </article>
           `).join('')}
@@ -912,7 +1104,7 @@ function renderPlayers() {
   return `<section class="players">${game.players.map((player, index) => {
     const permanent = getPermanentCounts(player);
     const inactive = player.active === false;
-    const badges = `${index === game.currentPlayerIndex ? '<span>\u5f53\u524d</span>' : ''}${viewer?.playerIndex === index ? '<span>\u4f60</span>' : ''}${inactive ? '<span>\u5df2\u9000\u51fa</span>' : ''}`;
+    const badges = `${index === game.currentPlayerIndex ? '<span>\u5f53\u524d</span>' : ''}${viewer?.playerIndex === index ? '<span>\u4f60</span>' : ''}${isAIPlayer(player) ? `<span>AI ${AI_LEVELS[player.aiLevel]?.name || player.aiLevel}</span>` : ''}${inactive ? '<span>\u5df2\u9000\u51fa</span>' : ''}`;
     return `
       <article class="panel player ${index === game.currentPlayerIndex ? 'active' : ''} ${viewer?.playerIndex === index ? 'me' : ''} ${inactive ? 'inactive' : ''}">
         <h2>${escapeHtml(player.name)} ${badges}</h2>
@@ -930,7 +1122,16 @@ function renderPlayers() {
 
 function renderPhaseControls() {
   if (game.phase === 'game_over') return '';
-  const canInteract = !isOnline() || isOnlineActionTurn();
+  const canInteract = (!isOnline() || isOnlineActionTurn()) && !isCurrentTurnAI();
+  if (!isOnline() && isCurrentTurnAI()) {
+    const current = game.phase === 'discard_tokens' ? game.players[game.pendingDiscardPlayerIndex] : getCurrentPlayer(game);
+    return `
+      <section class="panel action-panel">
+        <h2>AI is thinking</h2>
+        <p>${escapeHtml(current.name)} (${AI_LEVELS[current.aiLevel]?.label || 'AI'}) will act automatically.</p>
+      </section>
+    `;
+  }
   if (isOnline() && !canInteract) {
     const current = game.phase === 'discard_tokens' ? game.players[game.pendingDiscardPlayerIndex] : getCurrentPlayer(game);
     return `
@@ -1009,7 +1210,7 @@ function renderReserved() {
 
 function renderCard(card, { source, level } = {}) {
   const player = game ? getCurrentPlayer(game) : null;
-  const canInteract = !isOnline() || isOnlineActionTurn();
+  const canInteract = (!isOnline() || isOnlineActionTurn()) && !isCurrentTurnAI();
   const affordable = player && game.phase === 'player_action' && canBuyCard(player, card);
   const purchasable = affordable && canInteract;
   const options = player ? getPaymentOptions(player, card) : [];
@@ -1260,7 +1461,7 @@ function renderGameOver() {
           ${ranking.map((p, index) => `
             <li class="${game.winners.some((winner) => winner.id === p.id) ? 'winner' : ''}">
               <span class="rank-medal">${index + 1}</span>
-              <span class="rank-name">${escapeHtml(p.name)}</span>
+              <span class="rank-name">${escapeHtml(p.name)}${isAIPlayer(p) ? ' (AI)' : ''}</span>
               <span class="rank-score">${p.happiness} 开心值</span>
               <span class="rank-cards">${p.ownedCards.length} 张发展卡</span>
             </li>

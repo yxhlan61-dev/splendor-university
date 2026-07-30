@@ -10,6 +10,7 @@ import {
   takeDifferent,
   takeSame,
 } from '../src/game.js';
+import { AI_LEVELS, hydrateAIPlayers, runAIActions } from '../src/ai.js';
 
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
 const WAITING_DISCONNECTED_TTL_MS = 10 * 60 * 1000;
@@ -53,6 +54,48 @@ function sanitizeName(value, fallback, max = 18) {
   return (text || fallback).slice(0, max);
 }
 
+function normalizeAILevel(level) {
+  return AI_LEVELS[level] ? level : 'haiku';
+}
+
+function makeAIClientId(index) {
+  return `AI${index + 1}`;
+}
+
+function isAIClientId(clientId = '') {
+  return String(clientId).startsWith('AI');
+}
+
+function isAISeat(seat) {
+  return Boolean(seat?.aiLevel || isAIClientId(seat?.clientId));
+}
+
+function aiDisplayName(level) {
+  return AI_LEVELS[normalizeAILevel(level)].name;
+}
+
+function runRoomAI(room, { maxActions = 20 } = {}) {
+  if (!room?.game || room.status !== 'playing') return [];
+  const flashes = [];
+  const results = runAIActions(room.game, {
+    maxActions,
+    onAction: ({ result }) => {
+      if (result?.opportunity?.card) {
+        flashes.push({
+          id: randomId('F'),
+          type: 'opportunity',
+          card: result.opportunity.card,
+          message: result.opportunity.result?.message || '',
+          createdAt: new Date().toISOString(),
+        });
+      }
+    },
+  });
+  if (flashes.length) room.flash = flashes[flashes.length - 1];
+  if (room.game.phase === 'game_over') room.status = 'game_over';
+  return results;
+}
+
 function publicRoom(room, clientToken = '') {
   const me = room.clients?.[clientToken];
   return {
@@ -70,8 +113,10 @@ function publicRoom(room, clientToken = '') {
         index: seat.index,
         name: seat.name,
         occupied: Boolean(seat.clientId),
-        connected: Boolean(client?.connected),
-        ready: Boolean(client?.ready || seat.clientId === room.hostClientId),
+        aiLevel: seat.aiLevel || null,
+        isAI: isAISeat(seat),
+        connected: isAISeat(seat) ? true : Boolean(client?.connected),
+        ready: Boolean(isAISeat(seat) || client?.ready || seat.clientId === room.hostClientId),
         active: room.game?.players?.[seat.index]?.active !== false,
         isHost: seat.clientId === room.hostClientId,
       };
@@ -103,7 +148,9 @@ function roomListItem(room) {
       index: seat.index,
       name: seat.name,
       occupied: Boolean(seat.clientId),
-      connected: Boolean(seat.clientId && room.clients?.[seat.clientId]?.connected),
+      aiLevel: seat.aiLevel || null,
+      isAI: isAISeat(seat),
+      connected: isAISeat(seat) ? true : Boolean(seat.clientId && room.clients?.[seat.clientId]?.connected),
     })),
     createdAt: room.createdAt,
     updatedAt: room.updatedAt,
@@ -137,7 +184,7 @@ function addChatMessage(room, client, message) {
 function readyState(room) {
   const occupied = room.seats.filter((seat) => seat.clientId);
   const missing = room.seats.filter((seat) => !seat.clientId);
-  const unready = occupied.filter((seat) => seat.clientId !== room.hostClientId && !room.clients?.[seat.clientId]?.ready);
+  const unready = occupied.filter((seat) => !isAISeat(seat) && seat.clientId !== room.hostClientId && !room.clients?.[seat.clientId]?.ready);
   return { occupied, missing, unready, canStart: room.status === 'waiting' && missing.length === 0 && unready.length === 0 };
 }
 
@@ -174,6 +221,7 @@ export class GameLobby {
   }
 
   markStaleConnection(room, client) {
+    if (client?.isAI) return false;
     if (client?.connected && !this.hasLiveSubscriber(room.id, client.clientId)) {
       client.connected = false;
       return true;
@@ -190,7 +238,7 @@ export class GameLobby {
   }
 
   latestClientLastSeen(room) {
-    const seen = Object.values(room.clients || {}).map((client) => Number(client.lastSeen || 0));
+    const seen = Object.values(room.clients || {}).filter((client) => !client.isAI).map((client) => Number(client.lastSeen || 0));
     return seen.length ? Math.max(...seen) : 0;
   }
 
@@ -199,7 +247,7 @@ export class GameLobby {
       if (!seat.clientId) return false;
       const client = room.clients?.[seat.clientId];
       const player = room.game?.players?.[seat.index];
-      return Boolean(client && client.left !== true && player?.active !== false);
+      return Boolean(client && !client.isAI && client.connected && client.left !== true && player?.active !== false);
     });
   }
 
@@ -208,6 +256,7 @@ export class GameLobby {
   }
 
   canReplaceSeat(room, seat, now) {
+    if (isAISeat(seat)) return false;
     const client = seat.clientId ? room.clients?.[seat.clientId] : null;
     return !client || (!client.connected && now - (client.lastSeen || 0) > WAITING_DISCONNECTED_TTL_MS);
   }
@@ -220,13 +269,14 @@ export class GameLobby {
   cleanupWaitingRoom(room, now) {
     let changed = false;
     for (const seat of room.seats) {
-      if (!seat.clientId) continue;
+      if (!seat.clientId || isAISeat(seat)) continue;
       const client = room.clients?.[seat.clientId];
       const inactive = !client || (!client.connected && now - (client.lastSeen || 0) > WAITING_DISCONNECTED_TTL_MS);
       if (inactive) {
         if (client) delete room.clients[seat.clientId];
         seat.clientId = null;
-        seat.name = `\u7b49\u5f85\u73a9\u5bb6${seat.index + 1}`;
+        seat.aiLevel = null;
+        seat.name = `Waiting Player ${seat.index + 1}`;
         changed = true;
       }
     }
@@ -237,7 +287,7 @@ export class GameLobby {
       }
     }
     if (!room.hostClientId || !room.clients?.[room.hostClientId]) {
-      const nextHostSeat = room.seats.find((seat) => seat.clientId);
+      const nextHostSeat = room.seats.find((seat) => seat.clientId && !room.clients?.[seat.clientId]?.isAI);
       room.hostClientId = nextHostSeat?.clientId || null;
       changed = true;
     }
@@ -352,19 +402,25 @@ export class GameLobby {
 
   createRoom(body) {
     const playerCount = Number(body.playerCount || 2);
-    if (![2, 3, 4].includes(playerCount)) throw new Error('线上房间人数必须为 2-4 人');
+    if (![2, 3, 4].includes(playerCount)) throw new Error('Online rooms must have 2-4 players');
     const id = randomId('R').slice(0, 8);
     const hostClientId = randomId('C');
-    const hostName = sanitizeName(body.playerName, '房主');
+    const hostName = sanitizeName(body.playerName, '??');
     const now = new Date().toISOString();
-    const seats = Array.from({ length: playerCount }, (_, index) => ({
-      index,
-      name: index === 0 ? hostName : `等待玩家${index + 1}`,
-      clientId: index === 0 ? hostClientId : null,
-    }));
+    const aiSeats = Array.isArray(body.aiSeats) ? body.aiSeats : [];
+    const aiByIndex = new Map(aiSeats.map((seat) => [Number(seat.index), normalizeAILevel(seat.aiLevel || seat.level)]));
+    const seats = Array.from({ length: playerCount }, (_, index) => {
+      const aiLevel = index === 0 ? null : aiByIndex.get(index);
+      if (aiLevel) return { index, name: aiDisplayName(aiLevel), clientId: makeAIClientId(index), aiLevel };
+      return {
+        index,
+        name: index === 0 ? hostName : `Waiting Player ${index + 1}`,
+        clientId: index === 0 ? hostClientId : null,
+      };
+    });
     const room = {
       id,
-      name: sanitizeName(body.roomName, `${hostName}的房间`, 24),
+      name: sanitizeName(body.roomName, `${hostName}???`, 24),
       status: 'waiting',
       playerCount,
       firstMode: body.firstMode === 'random' ? 'random' : 'host',
@@ -388,10 +444,23 @@ export class GameLobby {
       notices: [],
       flash: null,
     };
+
+    for (const seat of seats.filter(isAISeat)) {
+      room.clients[seat.clientId] = {
+        clientId: seat.clientId,
+        playerIndex: seat.index,
+        playerName: seat.name,
+        spectator: false,
+        ready: true,
+        connected: true,
+        lastSeen: Date.now(),
+        isAI: true,
+        aiLevel: seat.aiLevel,
+      };
+    }
     this.rooms.set(id, room);
     return { room, clientToken: hostClientId };
   }
-
   joinRoom(room, body) {
     const name = sanitizeName(body.playerName, '\u73a9\u5bb6');
     const requestedToken = normalizeClientToken(body.clientToken);
@@ -465,6 +534,7 @@ export class GameLobby {
     if (room.game.currentPlayerIndex === client.playerIndex || room.game.players?.[room.game.currentPlayerIndex]?.active === false) {
       advanceToNextActivePlayer(room.game, client.playerIndex);
     }
+    runRoomAI(room);
     if (room.game.phase === 'game_over') room.status = 'game_over';
   }
 
@@ -475,11 +545,12 @@ export class GameLobby {
       const seat = room.seats[client.playerIndex];
       if (seat?.clientId === clientToken) {
         seat.clientId = null;
-      seat.name = `\u7b49\u5f85\u73a9\u5bb6${seat.index + 1}`;
+        seat.aiLevel = null;
+        seat.name = `Waiting Player ${seat.index + 1}`;
       }
       delete room.clients[clientToken];
       if (clientToken === room.hostClientId) {
-        const nextHostSeat = room.seats.find((seat) => seat.clientId);
+        const nextHostSeat = room.seats.find((seat) => seat.clientId && !room.clients?.[seat.clientId]?.isAI);
         room.hostClientId = nextHostSeat?.clientId || null;
         if (room.hostClientId && room.clients?.[room.hostClientId]) room.clients[room.hostClientId].ready = true;
       }
@@ -521,7 +592,8 @@ export class GameLobby {
     const kickedName = seat.name;
     delete room.clients[seat.clientId];
     seat.clientId = null;
-    seat.name = `等待玩家${seat.index + 1}`;
+    seat.aiLevel = null;
+    seat.name = `Waiting Player ${seat.index + 1}`;
     addNotice(room, 'player_kicked', `${kickedName} 已被房主移出房间。`);
     touch(room);
   }
@@ -542,19 +614,21 @@ export class GameLobby {
     if (missing.length) throw new Error('请等待所有座位坐满后再开始');
     if (unready.length) throw new Error('除房主外的所有玩家都准备后才能开始');
     const firstPlayerIndex = room.firstMode === 'random' ? Math.floor(Math.random() * room.playerCount) : 0;
-    room.game = createGame({
+    room.game = hydrateAIPlayers(createGame({
       playerCount: room.playerCount,
       playerNames: room.seats.map((seat) => seat.name),
       firstPlayerIndex,
-    });
+    }), room.seats.filter(isAISeat).map((seat) => ({ index: seat.index, aiLevel: seat.aiLevel })));
     room.status = 'playing';
     room.flash = null;
     addNotice(room, 'game_started', '游戏已开始，祝大家玩得开心。');
+    runRoomAI(room);
     touch(room);
   }
 
   assertPlayerTurn(room, client) {
     if (!room.game || room.status !== 'playing') throw new Error('房间尚未开始游戏');
+    if (client.isAI) throw new Error('AI players act automatically');
     if (client.spectator || client.playerIndex === null) throw new Error('观战者不能执行游戏动作');
     const game = room.game;
     if (game.phase === 'player_action' && game.currentPlayerIndex !== client.playerIndex) throw new Error('还没有轮到你行动');
@@ -597,6 +671,7 @@ export class GameLobby {
       default:
         throw new Error('未知线上动作');
     }
+    runRoomAI(room);
     if (room.game.phase === 'game_over') room.status = 'game_over';
     touch(room);
     return result;
@@ -620,6 +695,7 @@ export class GameLobby {
       this.dropSubscriber(room.id, sub);
       const c = room.clients?.[clientToken];
       if (c) {
+        if (c.isAI) return;
         if (room.status === 'playing' && !c.spectator) this.handlePlayerLeftDuringGame(room, c, 'disconnect');
         else c.connected = false;
       }

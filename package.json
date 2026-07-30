@@ -2,7 +2,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.js",
-    "test": "node tests/rules.test.js",
+    "test": "node tests/rules.test.js && node tests/ai.test.js",
     "serve": "node server.js",
     "deploy": "npm run build && wrangler deploy"
   },
