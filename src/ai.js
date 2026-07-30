@@ -135,6 +135,43 @@ function costTotal(card) {
   return TASK_TYPES.reduce((sum, type) => sum + (card.cost?.[type] || 0), 0);
 }
 
+
+function tokenLoad(player) {
+  return totalTokens(player.tokens || {});
+}
+
+function tokenPressure(player) {
+  // Starts nudging decisions at 8 task cards, and becomes strong at/above the 10-card limit.
+  return Math.max(0, tokenLoad(player) - (TOKEN_LIMIT - 3));
+}
+
+function isNearTokenLimit(player) {
+  return tokenLoad(player) >= TOKEN_LIMIT - 1;
+}
+
+function reserveSlotsUsed(player) {
+  return player.reservedCards?.length || 0;
+}
+
+function reserveCapacityPressure(player) {
+  const used = reserveSlotsUsed(player);
+  if (used <= 0) return 0;
+  return used * used * 18 + (used >= RESERVE_LIMIT - 1 ? 38 : 0);
+}
+
+function projectedTokenLoad(game, player, action) {
+  const current = tokenLoad(player);
+  if (action.type === 'takeSame') return current + 2;
+  if (action.type === 'takeDifferent') return current + (action.tokenTypes?.length || action.payload?.types?.length || 0);
+  if ((action.type === 'reserveMarket' || action.type === 'reserveBlind') && game.supply.wild > 0) return current + 1;
+  if (action.type === 'buyCard') return Math.max(0, current - costTotal(action.card));
+  return current;
+}
+
+function tokenOverflowPenalty(game, player, action, multiplier = 55) {
+  return Math.max(0, projectedTokenLoad(game, player, action) - TOKEN_LIMIT) * multiplier;
+}
+
 function missingCost(player, card) {
   const permanent = getPermanentCounts(player);
   if (card.flexCost?.type === 'abc-total') {
@@ -297,26 +334,47 @@ function scoreAction(game, playerIndex, action, level) {
   const player = game.players[playerIndex];
   const profile = level;
   if (action.type === 'discardToken') return -(action.tokenScore || 0);
+  const load = tokenLoad(player);
+  const pressure = tokenPressure(player);
+  const nearLimit = isNearTokenLimit(player);
+  const reservedCount = reserveSlotsUsed(player);
+  const reservePenalty = reserveCapacityPressure(player);
   let score = 0;
   if (action.type === 'buyCard') {
     score += 1000 + cardValue(player, action.card, action.level, profile) * 12;
     score += (action.card.happiness || 0) * (level === 'fable' ? 70 : 45);
-    if (action.source === 'reserved') score += 8;
+    score += pressure * 125 + Math.max(0, load - TOKEN_LIMIT + 1) * 140;
+    score += Math.min(TOKEN_LIMIT, costTotal(action.card)) * (pressure > 0 ? 14 : 3);
+    if (action.source === 'reserved') score += 8 + reservedCount * 12;
   } else if (action.type === 'reserveMarket') {
-    score += 90 + cardValue(player, action.card, action.level, profile) * 7;
-    if (level === 'opus' || level === 'fable') score += opponentThreat(game, playerIndex, action.card) * (level === 'fable' ? 1.6 : 1.0);
-    if (game.supply.wild > 0) score += 14;
+    const distance = missingCost(player, action.card);
+    score += 18 + cardValue(player, action.card, action.level, profile) * 2.4;
+    score += Math.max(0, 2 - distance) * 16;
+    if (level === 'opus' || level === 'fable') score += opponentThreat(game, playerIndex, action.card) * (level === 'fable' ? 0.45 : 0.28);
+    if (game.supply.wild > 0) score += pressure > 0 ? (nearLimit ? -4 : -18) : 5;
+    if (nearLimit) {
+      // When the hand is about to hit the 10-card cap, visible reserves are preferred over taking more cards.
+      score += 55 + pressure * 32 + Math.max(0, 6 - distance) * 9;
+      score -= tokenOverflowPenalty(game, player, action, 20);
+    }
+    score -= reservePenalty;
+    if (distance > 5) score -= (distance - 5) * 16;
   } else if (action.type === 'reserveBlind') {
-    score += action.level === 2 ? 32 : 20;
-    if (game.supply.wild > 0) score += 10;
+    score += action.level === 2 ? 6 : 2;
+    if (game.supply.wild > 0) score += pressure > 0 ? -24 : 3;
+    score -= reservePenalty + 28;
   } else if (action.type === 'takeSame' || action.type === 'takeDifferent') {
     score += action.tokenScore || 0;
+    score -= pressure * (nearLimit ? 34 : action.type === 'takeDifferent' ? 18 : 12);
+    score -= tokenOverflowPenalty(game, player, action, 75);
   }
+
+  if ((action.type === 'reserveMarket' || action.type === 'reserveBlind') && reservedCount >= RESERVE_LIMIT - 1) score -= 80;
 
   if (level === 'fable') {
     const sim = cloneGame(game);
     safeApply(sim, action);
-    score += evaluateGameForPlayer(sim, playerIndex, 'fable') * 0.35;
+    score += evaluateGameForPlayer(sim, playerIndex, 'fable') * 0.18;
   }
   return score;
 }
@@ -338,17 +396,44 @@ function chooseStrategic(game, playerIndex, level) {
   const buys = enumerateBuyActions(game, player, true);
   if (buys.length) actions.push(...buys);
 
+  const pressure = tokenPressure(player);
+  const reservedCount = reserveSlotsUsed(player);
+  const nearLimit = isNearTokenLimit(player);
   const reserveActions = enumerateReserveActions(game, player, level !== 'sonnet');
-  if (level === 'sonnet') {
-    const goodReserve = reserveActions.filter((action) => action.type === 'reserveMarket' && cardValue(player, action.card, action.level, level) >= 10);
-    if (!buys.length && goodReserve.length) actions.push(...goodReserve);
-  } else if (level === 'opus') {
-    actions.push(...reserveActions.filter((action) => action.type === 'reserveMarket' || game.supply.wild > 0));
-  } else if (level === 'fable') {
-    actions.push(...reserveActions);
+  const visibleReserveActions = reserveActions.filter((action) => action.type === 'reserveMarket');
+  const shouldConsiderReserve = pressure <= 1 && reservedCount === 0;
+  if (shouldConsiderReserve) {
+    if (level === 'sonnet') {
+      const goodReserve = visibleReserveActions.filter((action) => missingCost(player, action.card) <= 4 && cardValue(player, action.card, action.level, level) >= 18);
+      if (!buys.length && goodReserve.length) actions.push(...goodReserve);
+    } else if (level === 'opus') {
+      const goodReserve = visibleReserveActions.filter((action) => missingCost(player, action.card) <= 5 || opponentThreat(game, playerIndex, action.card) >= 18);
+      if (!buys.length || game.supply.wild > 0) actions.push(...goodReserve);
+    } else if (level === 'fable') {
+      const goodReserve = visibleReserveActions.filter((action) => missingCost(player, action.card) <= 5 || opponentThreat(game, playerIndex, action.card) >= 22);
+      actions.push(...goodReserve);
+      if (!buys.length && reservedCount === 0 && pressure === 0 && game.supply.wild > 0) {
+        actions.push(...reserveActions.filter((action) => action.type === 'reserveBlind' && action.level === 2));
+      }
+    }
   }
 
-  actions.push(...enumerateTokenActions(game, player, level));
+  if (nearLimit && !buys.length && reservedCount < RESERVE_LIMIT) {
+    const pressureReserve = visibleReserveActions.filter((action) => {
+      const distance = missingCost(player, action.card);
+      const value = cardValue(player, action.card, action.level, level);
+      const threat = level === 'opus' || level === 'fable' ? opponentThreat(game, playerIndex, action.card) : 0;
+      return distance <= 6 || value >= 12 || threat >= 12;
+    });
+    actions.push(...(pressureReserve.length ? pressureReserve : visibleReserveActions));
+  }
+
+  const tokenActions = enumerateTokenActions(game, player, level);
+  if (pressure >= 2 && buys.length) {
+    actions = buys;
+  } else {
+    actions.push(...tokenActions);
+  }
   actions = actions.filter(Boolean);
   if (!actions.length) return null;
   return actions

@@ -37,6 +37,69 @@ function testHaikuNeverReserves() {
   assert.notEqual(action?.type, 'reserveBlind');
 }
 
+
+function testStrategicAIPrefersTokensOverOpeningReserve() {
+  for (const level of ['sonnet', 'opus', 'fable']) {
+    const game = deterministicGame(2);
+    hydrateAIPlayers(game, [{ index: 0, aiLevel: level }]);
+    const action = chooseAIAction(game, 0);
+    assert.notEqual(action?.type, 'reserveMarket', `${level} should not reserve a visible card as its opening move`);
+    assert.notEqual(action?.type, 'reserveBlind', `${level} should not blind-reserve as its opening move`);
+  }
+}
+
+function testStrategicAIBuysWhenNearTokenLimit() {
+  for (const level of ['sonnet', 'opus', 'fable']) {
+    const game = deterministicGame(2);
+    hydrateAIPlayers(game, [{ index: 0, aiLevel: level }]);
+    const card = {
+      id: 'TEST_BUY',
+      templateId: 'TEST_BUY',
+      instanceId: `TEST_BUY_${level}`,
+      name: 'Test affordable card',
+      level: 1,
+      attribute: 'a',
+      cost: { a: 1, b: 1, c: 1 },
+      happiness: 0,
+    };
+    game.market.level1 = [card];
+    game.market.level2 = [];
+    game.decks.level1 = [];
+    game.decks.level2 = [];
+    game.players[0].tokens = { a: 1, b: 1, c: 1, d: 3, e: 3, wild: 0 };
+
+    const action = chooseAIAction(game, 0);
+    assert.equal(action?.type, 'buyCard', `${level} should buy an affordable card when near the 10-token limit`);
+    assert.equal(action?.payload.instanceId, card.instanceId);
+  }
+}
+
+function testStrategicAIPrereservesVisibleCardInsteadOfTakingMoreNearTokenLimit() {
+  for (const level of ['sonnet', 'opus', 'fable']) {
+    const game = deterministicGame(2);
+    hydrateAIPlayers(game, [{ index: 0, aiLevel: level }]);
+    const card = {
+      id: 'TEST_RESERVE',
+      templateId: 'TEST_RESERVE',
+      instanceId: `TEST_RESERVE_${level}`,
+      name: 'Test reserve card',
+      level: 1,
+      attribute: 'a',
+      cost: { a: 4, b: 4, c: 4, d: 4, e: 4 },
+      happiness: 3,
+    };
+    game.market.level1 = [card];
+    game.market.level2 = [];
+    game.decks.level1 = [];
+    game.decks.level2 = [];
+    game.players[0].tokens = { a: 2, b: 2, c: 2, d: 2, e: 1, wild: 0 };
+
+    const action = chooseAIAction(game, 0);
+    assert.equal(action?.type, 'reserveMarket', `${level} should reserve/preorder a visible card instead of taking more tokens near the 10-token limit`);
+    assert.equal(action?.payload.instanceId, card.instanceId);
+  }
+}
+
 function testAIDiscardReturnsToLimit() {
   const game = deterministicGame(2);
   hydrateAIPlayers(game, [{ index: 0, aiLevel: 'fable' }]);
@@ -52,6 +115,9 @@ function testAIDiscardReturnsToLimit() {
 testHydrateAIPlayers();
 testRunAIActionsAdvancesTurn();
 testHaikuNeverReserves();
+testStrategicAIPrefersTokensOverOpeningReserve();
+testStrategicAIBuysWhenNearTokenLimit();
+testStrategicAIPrereservesVisibleCardInsteadOfTakingMoreNearTokenLimit();
 testAIDiscardReturnsToLimit();
 
 console.log('All AI tests passed.');
