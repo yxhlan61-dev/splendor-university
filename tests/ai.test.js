@@ -101,6 +101,96 @@ function testStrategicAIPrereservesVisibleCardInsteadOfTakingMoreNearTokenLimit(
 }
 
 
+
+function testOpusAndFableTakeImmediateWinningLevelTwoCard() {
+  for (const level of ['opus', 'fable']) {
+    const game = deterministicGame(2);
+    hydrateAIPlayers(game, [{ index: 0, aiLevel: level }]);
+    game.players[0].happiness = 10;
+    game.players[0].tokens = { a: 7, b: 0, c: 0, d: 0, e: 0, wild: 0 };
+    const winningCard = {
+      instanceId: `WIN_L2_${level}`,
+      templateId: `WIN_L2_${level}`,
+      name: 'Winning level two card',
+      level: 2,
+      attribute: 'a',
+      cost: { a: 7 },
+      happiness: 5,
+    };
+    const smallCard = {
+      instanceId: `SMALL_L1_${level}`,
+      templateId: `SMALL_L1_${level}`,
+      name: 'Small level one card',
+      level: 1,
+      attribute: 'e',
+      cost: { e: 3 },
+      happiness: 1,
+    };
+    game.market.level1 = [smallCard];
+    game.market.level2 = [winningCard];
+    game.decks.level1 = [];
+    game.decks.level2 = [];
+
+    const action = chooseAIAction(game, 0);
+    assert.equal(action?.type, 'buyCard', `${level} should take the level-2 lethal card immediately`);
+    assert.equal(action?.payload.instanceId, winningCard.instanceId);
+  }
+}
+
+function testOpusAndFableCollectFastestTokensForLevelTwoLethal() {
+  for (const level of ['opus', 'fable']) {
+    const game = deterministicGame(2);
+    hydrateAIPlayers(game, [{ index: 0, aiLevel: level }]);
+    game.players[0].happiness = 10;
+    game.players[0].tokens = { a: 4, b: 0, c: 0, d: 0, e: 0, wild: 0 };
+    game.supply = { a: 5, b: 5, c: 5, d: 5, e: 5, wild: 5 };
+    const winningCard = {
+      instanceId: `NEAR_WIN_L2_${level}`,
+      templateId: `NEAR_WIN_L2_${level}`,
+      name: 'Near winning level two card',
+      level: 2,
+      attribute: 'a',
+      cost: { a: 7 },
+      happiness: 5,
+    };
+    game.market.level1 = [];
+    game.market.level2 = [winningCard];
+    game.decks.level1 = [];
+    game.decks.level2 = [];
+
+    const action = chooseAIAction(game, 0);
+    assert.equal(action?.type, 'takeSame', `${level} should collect the fastest tokens for next-turn level-2 lethal instead of reserving`);
+    assert.equal(action?.payload.tokenType, 'a');
+  }
+}
+
+function testOpusAndFableReserveDistantLevelTwoLethalPlan() {
+  for (const level of ['opus', 'fable']) {
+    const game = deterministicGame(2);
+    hydrateAIPlayers(game, [{ index: 0, aiLevel: level }]);
+    game.players[0].happiness = 10;
+    game.players[0].tokens = { a: 1, b: 0, c: 0, d: 0, e: 0, wild: 0 };
+    game.supply = { a: 5, b: 5, c: 5, d: 5, e: 5, wild: 5 };
+    const winningCard = {
+      instanceId: `DISTANT_WIN_L2_${level}`,
+      templateId: `DISTANT_WIN_L2_${level}`,
+      name: 'Distant winning level two card',
+      level: 2,
+      attribute: 'a',
+      cost: { a: 7 },
+      happiness: 5,
+    };
+    game.market.level1 = [];
+    game.market.level2 = [winningCard];
+    game.decks.level1 = [];
+    game.decks.level2 = [];
+
+    const action = chooseAIAction(game, 0);
+    assert.equal(action?.type, 'reserveMarket', `${level} should reserve a distant lethal level-2 route before it disappears`);
+    assert.equal(action?.payload.instanceId, winningCard.instanceId);
+  }
+}
+
 function testAIApplyBuyUsesProvidedRandomForOpportunityDraw() {
   const first = deterministicGame(2);
   const firstCard = {
@@ -143,6 +233,9 @@ testHaikuNeverReserves();
 testStrategicAIPrefersTokensOverOpeningReserve();
 testStrategicAIBuysWhenNearTokenLimit();
 testStrategicAIPrereservesVisibleCardInsteadOfTakingMoreNearTokenLimit();
+testOpusAndFableTakeImmediateWinningLevelTwoCard();
+testOpusAndFableCollectFastestTokensForLevelTwoLethal();
+testOpusAndFableReserveDistantLevelTwoLethalPlan();
 testAIApplyBuyUsesProvidedRandomForOpportunityDraw();
 testAIDiscardReturnsToLimit();
 

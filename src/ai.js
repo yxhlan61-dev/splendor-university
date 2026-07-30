@@ -11,7 +11,7 @@
   takeSame,
   totalTokens,
 } from './game.js';
-import { RESERVE_LIMIT, TASK_TYPES, TOKEN_LIMIT, TOKEN_TYPES } from './data.js';
+import { RESERVE_LIMIT, TASK_TYPES, TOKEN_LIMIT, TOKEN_TYPES, WINNING_HAPPINESS } from './data.js';
 
 export const AI_LEVELS = {
   haiku: {
@@ -172,6 +172,87 @@ function tokenOverflowPenalty(game, player, action, multiplier = 55) {
   return Math.max(0, projectedTokenLoad(game, player, action) - TOKEN_LIMIT) * multiplier;
 }
 
+function playerAfterTokenAction(player, action) {
+  const next = { ...player, tokens: { ...(player.tokens || {}) } };
+  if (action.type === 'takeSame') next.tokens[action.payload.tokenType] = (next.tokens[action.payload.tokenType] || 0) + 2;
+  if (action.type === 'takeDifferent') {
+    for (const type of action.payload.types || []) next.tokens[type] = (next.tokens[type] || 0) + 1;
+  }
+  return next;
+}
+
+function tokenActionImprovement(player, card, action) {
+  if (action.type !== 'takeSame' && action.type !== 'takeDifferent') return 0;
+  return missingCost(player, card) - missingCost(playerAfterTokenAction(player, action), card);
+}
+
+function happinessNeeded(player) {
+  return Math.max(0, WINNING_HAPPINESS - (player.happiness || 0));
+}
+
+function isEndgamePlanner(level, player) {
+  return (level === 'opus' || level === 'fable') && (player.happiness || 0) >= WINNING_HAPPINESS - 7;
+}
+
+function cardTurnsAway(player, card) {
+  const missing = missingCost(player, card);
+  if (canBuyCard(player, card)) return 0;
+  // A turn can normally add up to 3 useful task cards. Reserve actions are still one turn,
+  // but for visible market cards this is a good local estimate of the fastest scoring route.
+  return Math.ceil(missing / 3);
+}
+
+function canTriggerWin(player, card) {
+  return (card.happiness || 0) >= happinessNeeded(player);
+}
+
+function findFastestLevelTwoWinPlan(game, player, playerIndex, level, tokenActions) {
+  if (!isEndgamePlanner(level, player)) return null;
+  const targets = [...allVisibleCards(game), ...ownReservedCards(player)]
+    .filter(({ card, level: cardLevel }) => cardLevel === 2 && canTriggerWin(player, card))
+    .map((item) => ({
+      ...item,
+      distance: missingCost(player, item.card),
+      threat: item.source === 'market' ? opponentThreat(game, playerIndex, item.card) : 0,
+      value: endgameCardPriority(player, item.card, level),
+    }))
+    .filter((item) => item.distance > 0 && item.distance <= 3 && item.threat < 12)
+    .sort((a, b) => a.distance - b.distance || b.value - a.value);
+
+  for (const target of targets) {
+    const actions = tokenActions
+      .map((action) => ({
+        action: {
+          ...action,
+          endgamePlanBonus: 900 + Math.max(0, target.value) * 0.75 + (3 - target.distance) * 80,
+          endgameTargetId: target.card.instanceId,
+        },
+        improvement: tokenActionImprovement(player, target.card, action),
+        score: action.tokenScore || 0,
+      }))
+      .filter((item) => item.improvement > 0)
+      .sort((a, b) => b.improvement - a.improvement || b.score - a.score)
+      .map((item) => item.action);
+    if (actions.length) return { target, actions };
+  }
+  return null;
+}
+
+function endgameCardPriority(player, card, profile = 'opus') {
+  const points = card.happiness || 0;
+  if (points <= 0) return 0;
+  const needed = happinessNeeded(player);
+  const turnsAway = cardTurnsAway(player, card);
+  const cardLevel = Number(card.level) || 1;
+  let score = 0;
+  if (points >= needed) score += 620 - turnsAway * 130;
+  else score += points * 36 - turnsAway * 45;
+  if (cardLevel === 2) score += 70 + Math.max(0, (player.happiness || 0) - 8) * 9 + points * 18;
+  if (turnsAway <= 1) score += 75;
+  if (profile === 'fable' && points >= needed) score += 95;
+  return score;
+}
+
 function missingCost(player, card) {
   const permanent = getPermanentCounts(player);
   if (card.flexCost?.type === 'abc-total') {
@@ -200,13 +281,16 @@ function missingCost(player, card) {
 function cardValue(player, card, level = card.level || 1, profile = 'balanced') {
   const permanent = getPermanentCounts(player);
   const attrNeed = card.attribute ? Math.max(0, 3 - (permanent[card.attribute] || 0)) : 0;
-  const points = (card.happiness || 0) * (profile === 'fable' ? 15 : 11);
-  const discount = card.attribute ? 5 + attrNeed * 1.4 : 0;
-  const cheap = Math.max(0, 8 - costTotal(card)) * (level === 1 ? 0.8 : 0.35);
+  const endgame = isEndgamePlanner(profile, player);
+  const happiness = card.happiness || 0;
+  const points = happiness * (profile === 'fable' ? (endgame ? 22 : 15) : endgame ? 18 : 11);
+  const discount = card.attribute ? 5 + attrNeed * (endgame && level === 1 ? 0.55 : 1.4) : 0;
+  const cheap = Math.max(0, 8 - costTotal(card)) * (level === 1 ? (endgame ? 0.25 : 0.8) : 0.35);
   const distance = missingCost(player, card);
-  const near = Math.max(0, 7 - distance) * (profile === 'fable' ? 1.7 : 1.1);
-  const levelBias = level === 2 ? (profile === 'haiku' ? 0 : 2.2) : 1.2;
-  return points + discount + cheap + near + levelBias - distance * 1.8;
+  const near = Math.max(0, 7 - distance) * (profile === 'fable' ? (endgame ? 2.8 : 1.7) : endgame ? 2.0 : 1.1);
+  const levelBias = level === 2 ? (profile === 'haiku' ? 0 : endgame ? 32 + happiness * 9 : 2.2) : endgame && happiness === 0 ? -6 : 1.2;
+  const winPlan = endgame ? endgameCardPriority(player, card, profile) : 0;
+  return points + discount + cheap + near + levelBias + winPlan - distance * (endgame ? 2.6 : 1.8);
 }
 
 function desiredTokenWeights(game, player, profile = 'balanced') {
@@ -215,7 +299,7 @@ function desiredTokenWeights(game, player, profile = 'balanced') {
   const sorted = candidates
     .map((item) => ({ ...item, distance: missingCost(player, item.card), value: cardValue(player, item.card, item.level, profile) }))
     .sort((a, b) => b.value - a.value)
-    .slice(0, profile === 'haiku' ? 2 : 5);
+    .slice(0, isEndgamePlanner(profile, player) ? 7 : profile === 'haiku' ? 2 : 5);
 
   for (const { card, distance, value } of sorted) {
     const multiplier = Math.max(0.5, value / 10) * (distance <= 3 ? 1.7 : 1);
@@ -314,6 +398,8 @@ function evaluateGameForPlayer(game, playerIndex, profile = 'balanced') {
   if (!player) return -Infinity;
   const permanent = getPermanentCounts(player);
   let score = (player.happiness || 0) * 100 + (player.ownedCards?.length || 0) * 2 - totalTokens(player.tokens) * 0.1;
+  if (player.happiness >= WINNING_HAPPINESS) score += 5000;
+  if (isEndgamePlanner(profile, player)) score += enumerateBuyActions(game, player, true).reduce((sum, action) => sum + endgameCardPriority(player, action.card, profile) * 0.35, 0);
   for (const type of TASK_TYPES) score += (permanent[type] || 0) * 12 + (player.tokens[type] || 0) * 1.7;
   score += (player.tokens.wild || 0) * 3.2;
   for (const card of player.reservedCards || []) score += cardValue(player, card, card.level, profile) * 0.45;
@@ -343,11 +429,24 @@ function scoreAction(game, playerIndex, action, level) {
   if (action.type === 'buyCard') {
     score += 1000 + cardValue(player, action.card, action.level, profile) * 12;
     score += (action.card.happiness || 0) * (level === 'fable' ? 70 : 45);
+    if (isEndgamePlanner(level, player)) {
+      score += endgameCardPriority(player, action.card, level) * 1.6;
+      if (canTriggerWin(player, action.card)) score += 10000;
+      if (action.level === 2) score += 180 + (action.card.happiness || 0) * 35;
+    }
     score += pressure * 125 + Math.max(0, load - TOKEN_LIMIT + 1) * 140;
     score += Math.min(TOKEN_LIMIT, costTotal(action.card)) * (pressure > 0 ? 14 : 3);
     if (action.source === 'reserved') score += 8 + reservedCount * 12;
   } else if (action.type === 'reserveMarket') {
     const distance = missingCost(player, action.card);
+    if (isEndgamePlanner(level, player) && action.level === 2 && (action.card.happiness || 0) > 0) {
+      score += endgameCardPriority(player, action.card, level) * 0.9 + 65;
+      if (canTriggerWin(player, action.card) && distance <= 3 && !nearLimit && opponentThreat(game, playerIndex, action.card) < 12) {
+        // If taking task cards can make the winning level-2 card affordable next turn,
+        // do not waste a turn reserving it unless it is about to be stolen or cards would overflow.
+        score -= 360;
+      }
+    }
     score += 18 + cardValue(player, action.card, action.level, profile) * 2.4;
     score += Math.max(0, 2 - distance) * 16;
     if (level === 'opus' || level === 'fable') score += opponentThreat(game, playerIndex, action.card) * (level === 'fable' ? 0.45 : 0.28);
@@ -365,8 +464,23 @@ function scoreAction(game, playerIndex, action, level) {
     score -= reservePenalty + 28;
   } else if (action.type === 'takeSame' || action.type === 'takeDifferent') {
     score += action.tokenScore || 0;
+    score += action.endgamePlanBonus || 0;
     score -= pressure * (nearLimit ? 34 : action.type === 'takeDifferent' ? 18 : 12);
     score -= tokenOverflowPenalty(game, player, action, 75);
+    if (isEndgamePlanner(level, player)) {
+      const chosen = action.tokenTypes || action.payload?.types || [action.payload?.tokenType].filter(Boolean);
+      const targets = [...allVisibleCards(game), ...ownReservedCards(player)]
+        .filter(({ card, level: cardLevel }) => cardLevel === 2 && (card.happiness || 0) > 0)
+        .map(({ card }) => ({ card, value: endgameCardPriority(player, card, level) }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, 3);
+      for (const { card, value } of targets) {
+        for (const type of chosen) {
+          if ((player.tokens[type] || 0) >= Math.max(0, (card.cost?.[type] || 0) - (getPermanentCounts(player)[type] || 0))) continue;
+          score += Math.max(0, value) * 0.05 + (card.level === 2 ? 12 : 0);
+        }
+      }
+    }
   }
 
   if ((action.type === 'reserveMarket' || action.type === 'reserveBlind') && reservedCount >= RESERVE_LIMIT - 1) score -= 80;
@@ -418,6 +532,24 @@ function chooseStrategic(game, playerIndex, level) {
     }
   }
 
+  if (isEndgamePlanner(level, player) && !buys.length && reservedCount < RESERVE_LIMIT) {
+    const endgameReserve = visibleReserveActions
+      .filter((action) => action.level === 2 && (action.card.happiness || 0) > 0)
+      .filter((action) => {
+        const distance = missingCost(player, action.card);
+        const threatened = opponentThreat(game, playerIndex, action.card) >= 12;
+        const tokenActionCanReachNextTurn = canTriggerWin(player, action.card) && distance <= 3;
+        if (tokenActionCanReachNextTurn) return nearLimit || threatened;
+        return canTriggerWin(player, action.card) || distance <= (level === 'fable' ? 8 : 6);
+      })
+      .sort((a, b) => endgameCardPriority(player, b.card, level) - endgameCardPriority(player, a.card, level))
+      .slice(0, level === 'fable' ? 3 : 2);
+    actions.push(...endgameReserve);
+    if (!endgameReserve.length && reservedCount === 0 && game.supply.wild > 0 && level === 'fable') {
+      actions.push(...reserveActions.filter((action) => action.type === 'reserveBlind' && action.level === 2));
+    }
+  }
+
   if (nearLimit && !buys.length && reservedCount < RESERVE_LIMIT) {
     const pressureReserve = visibleReserveActions.filter((action) => {
       const distance = missingCost(player, action.card);
@@ -429,9 +561,20 @@ function chooseStrategic(game, playerIndex, level) {
   }
 
   const tokenActions = enumerateTokenActions(game, player, level);
+  let forceEndgameTokenPlan = false;
+  if (!buys.length && !nearLimit) {
+    const fastestWinPlan = findFastestLevelTwoWinPlan(game, player, playerIndex, level, tokenActions);
+    if (fastestWinPlan?.actions.length) {
+      // A one-token-action path to a level-2 lethal card is the shortest possible non-buy route.
+      // Force the candidate set to those actions so opus/fable do not waste the decisive round.
+      actions = fastestWinPlan.actions;
+      forceEndgameTokenPlan = true;
+    }
+  }
+
   if (pressure >= 2 && buys.length) {
     actions = buys;
-  } else {
+  } else if (!forceEndgameTokenPlan) {
     actions.push(...tokenActions);
   }
   actions = actions.filter(Boolean);
